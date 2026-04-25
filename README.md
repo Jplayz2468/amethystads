@@ -1,5 +1,7 @@
 # amethystads plugin
 
+> **Early Access** — This plugin is currently in early access. To request access, join the Discord server at https://discord.gg/KkNfCQjczs
+
 Bukkit/Spigot plugin that fetches banner ads from the amethystADS edge node and displays them in-game. Servers earn credits per verified player click.
 
 ## Requirements
@@ -32,4 +34,4 @@ Copy `build/libs/amethystads-plugin.jar` into your server's `plugins/` directory
 
 ## Configuration
 
-Edit `plugins/amethystads/config.yml` after first run. The plugin registers with the edge node using a server ID and HMAC secret — use `/amethystregister` in-game to generate a registration token and submit it to the admin panel.
+Edit `plugins/amethystads/config.yml` after first run. The plugin registers with the edge node using a server ID and HMAC secret — use `/aa register` in-game to generate a registration token and submit it to the admin panel.
