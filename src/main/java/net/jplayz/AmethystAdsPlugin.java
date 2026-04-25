@@ -87,6 +87,8 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private static final double ATTENTION_DOT = 0.93;
     private static final double ATTENTION_MAX_DIST = 32.0;
     private static final String ACCESS_DISCORD = "https://discord.gg/KkNfCQjczs";
+    private static final int AD_SIZE = 256;
+    private static final int QUADRANT_SIZE = 128;
 
     private String serverId;
     private String serverSecret;
@@ -103,6 +105,9 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private final Map<String, Long> mapCacheTimestamps = new ConcurrentHashMap<String, Long>();
     private final Map<UUID, String> frameAdAssignments = new ConcurrentHashMap<UUID, String>();
     private final Set<UUID> trackedFrames = Collections.synchronizedSet(new HashSet<UUID>());
+    private final Map<UUID, Integer> frameQuadrant = new ConcurrentHashMap<UUID, Integer>();
+    private final Map<UUID, UUID> frameAnchor = new ConcurrentHashMap<UUID, UUID>();
+    private final Map<UUID, UUID[]> groupFrames = new ConcurrentHashMap<UUID, UUID[]>();
     private final Map<String, Long> slotByPlayerAd = new ConcurrentHashMap<String, Long>();
     private final Map<String, Integer> pendingImpressionCounts = new ConcurrentHashMap<String, Integer>();
     private volatile double currentCredits = 0.0;
@@ -297,7 +302,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         sender.sendMessage(ChatColor.GRAY + "server-id: " + ChatColor.WHITE + serverId);
         sender.sendMessage(ChatColor.GRAY + "api-url: " + ChatColor.WHITE + apiUrl);
         sender.sendMessage(ChatColor.GRAY + "loaded ads: " + ChatColor.WHITE + currentAdIds.size());
-        sender.sendMessage(ChatColor.GRAY + "tracked frames: " + ChatColor.WHITE + trackedFrames.size());
+        sender.sendMessage(ChatColor.GRAY + "tracked ads: " + ChatColor.WHITE + groupFrames.size());
         sender.sendMessage(ChatColor.GRAY + "cached maps: " + ChatColor.WHITE + mapCache.size());
         if (lastSuccessfulPollMs > 0L) {
             long ageS = Math.max(0L, (System.currentTimeMillis() - lastSuccessfulPollMs) / 1000L);
@@ -374,8 +379,8 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         inv.setItem(12, dashItem(Material.FILLED_MAP, ChatColor.WHITE + "loaded ads",
                 Collections.singletonList(ChatColor.AQUA + String.valueOf(currentAdIds.size()))));
 
-        inv.setItem(14, dashItem(Material.ITEM_FRAME, ChatColor.WHITE + "tracked frames",
-                Collections.singletonList(ChatColor.AQUA + String.valueOf(trackedFrames.size()))));
+        inv.setItem(14, dashItem(Material.ITEM_FRAME, ChatColor.WHITE + "tracked ads",
+                Collections.singletonList(ChatColor.AQUA + String.valueOf(groupFrames.size()))));
 
         List<String> earnLore = new ArrayList<String>();
         earnLore.add(ChatColor.GRAY + String.format("%.3f credits", currentCredits));
@@ -452,18 +457,39 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (clicked == null) return;
         BlockFace face = e.getBlockFace();
         if (face == BlockFace.SELF) return;
-        Block target = clicked.getRelative(face);
-        Location spawnLoc = target.getLocation().add(0.5, 0.5, 0.5);
-        ItemFrame frame;
+
+        BlockFace right = rightOf(face);
+        Block targetBL = clicked.getRelative(face);
+        Block targetBR = targetBL.getRelative(right);
+        Block targetTL = targetBL.getRelative(BlockFace.UP);
+        Block targetTR = targetBR.getRelative(BlockFace.UP);
+        Block[] targets = {targetTL, targetTR, targetBL, targetBR};
+
+        UUID[] group = new UUID[4];
         try {
-            frame = (ItemFrame) clicked.getWorld().spawnEntity(spawnLoc, EntityType.ITEM_FRAME);
+            for (int q = 0; q < 4; q++) {
+                Location spawnLoc = targets[q].getLocation().add(0.5, 0.5, 0.5);
+                ItemFrame fr = (ItemFrame) clicked.getWorld().spawnEntity(spawnLoc, EntityType.ITEM_FRAME);
+                fr.setFacingDirection(face, true);
+                group[q] = fr.getUniqueId();
+                trackedFrames.add(group[q]);
+                frameQuadrant.put(group[q], q);
+            }
         } catch (Exception ex) {
+            for (int q = 0; q < 4; q++) {
+                if (group[q] == null) continue;
+                trackedFrames.remove(group[q]);
+                frameQuadrant.remove(group[q]);
+                Entity ent = Bukkit.getEntity(group[q]);
+                if (ent != null) ent.remove();
+            }
             player.sendMessage(ChatColor.RED + "couldn't place ad here: " + ex.getMessage());
             return;
         }
-        frame.setFacingDirection(face, true);
-        trackedFrames.add(frame.getUniqueId());
-        updateFrame(frame, currentAdIds, System.currentTimeMillis() / ROTATION_SLOT_MS);
+        UUID anchor = group[2];
+        groupFrames.put(anchor, group);
+        for (UUID uid : group) frameAnchor.put(uid, anchor);
+        updateGroup(anchor, currentAdIds, System.currentTimeMillis() / ROTATION_SLOT_MS);
         savePersistentFrames();
         player.sendMessage(ChatColor.GREEN + "ad placed");
     }
@@ -482,8 +508,24 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 : player.getInventory().getItemInMainHand();
         if (player.isSneaking() && isAdItem(held)
                 && (player.isOp() || player.hasPermission("amethystads.admin"))) {
-            trackedFrames.remove(frame.getUniqueId());
-            frame.remove();
+            UUID clickedId = frame.getUniqueId();
+            UUID anchor = frameAnchor.get(clickedId);
+            UUID[] group = anchor != null ? groupFrames.get(anchor) : null;
+            if (group != null) {
+                for (UUID uid : group) {
+                    if (uid == null) continue;
+                    trackedFrames.remove(uid);
+                    frameQuadrant.remove(uid);
+                    frameAnchor.remove(uid);
+                    frameAdAssignments.remove(uid);
+                    Entity ent = Bukkit.getEntity(uid);
+                    if (ent instanceof ItemFrame) ent.remove();
+                }
+                groupFrames.remove(anchor);
+            } else {
+                trackedFrames.remove(clickedId);
+                frame.remove();
+            }
             savePersistentFrames();
             player.sendMessage(ChatColor.YELLOW + "ad removed");
             return;
@@ -510,11 +552,15 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent e) {
         if (currentAdIds.isEmpty()) return;
+        Set<UUID> anchorsToUpdate = new HashSet<UUID>();
         for (Entity ent : e.getChunk().getEntities()) {
             if (ent instanceof ItemFrame && trackedFrames.contains(ent.getUniqueId())) {
-                updateFrame((ItemFrame) ent, currentAdIds, System.currentTimeMillis() / ROTATION_SLOT_MS);
+                UUID anchor = frameAnchor.get(ent.getUniqueId());
+                if (anchor != null) anchorsToUpdate.add(anchor);
             }
         }
+        long slot = System.currentTimeMillis() / ROTATION_SLOT_MS;
+        for (UUID anchor : anchorsToUpdate) updateGroup(anchor, currentAdIds, slot);
     }
 
     @EventHandler
@@ -642,7 +688,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             boolean anyStale = false;
             for (String adId : needed) {
                 Long ts = mapCacheTimestamps.get(adId);
-                if (!mapCache.containsKey(adId) || ts == null || now - ts > CACHE_EXPIRY_MS) {
+                if (!mapCache.containsKey(adId + "_0") || ts == null || now - ts > CACHE_EXPIRY_MS) {
                     anyStale = true;
                     break;
                 }
@@ -654,7 +700,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             final Map<String, BufferedImage> downloaded = new HashMap<String, BufferedImage>();
             for (String adId : needed) {
                 Long ts = mapCacheTimestamps.get(adId);
-                if (mapCache.containsKey(adId) && ts != null && now - ts <= CACHE_EXPIRY_MS) continue;
+                if (mapCache.containsKey(adId + "_0") && ts != null && now - ts <= CACHE_EXPIRY_MS) continue;
                 downloaded.put(adId, downloadImage(imageBase + adId));
             }
 
@@ -662,8 +708,12 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 @Override public void run() {
                     long updateTime = System.currentTimeMillis();
                     for (Map.Entry<String, BufferedImage> entry : downloaded.entrySet()) {
-                        mapCache.put(entry.getKey(), createMapView(entry.getValue(), entry.getKey()));
-                        mapCacheTimestamps.put(entry.getKey(), updateTime);
+                        String adId = entry.getKey();
+                        BufferedImage full = entry.getValue();
+                        for (int q = 0; q < 4; q++) {
+                            mapCache.put(adId + "_" + q, createMapView(full, q));
+                        }
+                        mapCacheTimestamps.put(adId, updateTime);
                     }
                     currentAdIds = adIds;
                     currentImageBase = imageBase;
@@ -689,35 +739,46 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     private void updateAllFrames(List<String> adIds, long slot) {
         if (adIds.isEmpty()) return;
-        synchronized (trackedFrames) {
-            for (UUID id : trackedFrames) {
-                Entity entity = Bukkit.getEntity(id);
-                if (entity instanceof ItemFrame) {
-                    updateFrame((ItemFrame) entity, adIds, slot);
-                }
-            }
+        for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
+            updateGroup(anchor, adIds, slot);
         }
     }
 
-    private void updateFrame(ItemFrame frame, List<String> adIds, long slot) {
-        String adId = selectAdForFrame(frame.getUniqueId(), adIds, slot);
-        MapView view = mapCache.get(adId);
-        if (view == null) return;
-        frameAdAssignments.put(frame.getUniqueId(), adId);
-        frame.setItem(buildMapItem(view));
+    private void updateGroup(UUID anchor, List<String> adIds, long slot) {
+        UUID[] group = groupFrames.get(anchor);
+        if (group == null) return;
+        String adId = selectAdForFrame(anchor, adIds, slot);
+        for (int q = 0; q < 4; q++) {
+            if (group[q] == null) continue;
+            Entity ent = Bukkit.getEntity(group[q]);
+            if (!(ent instanceof ItemFrame)) continue;
+            MapView view = mapCache.get(adId + "_" + q);
+            if (view == null) continue;
+            frameAdAssignments.put(group[q], adId);
+            ((ItemFrame) ent).setItem(buildMapItem(view));
+        }
     }
 
     private List<String> computeNeededAdIds(List<String> adIds, long slot) {
         if (adIds.isEmpty()) return Collections.emptyList();
         Set<String> needed = new HashSet<String>();
-        synchronized (trackedFrames) {
-            if (trackedFrames.isEmpty()) {
-                needed.add(adIds.get((int) Math.floorMod(slot, (long) adIds.size())));
-            } else {
-                for (UUID frameId : trackedFrames) needed.add(selectAdForFrame(frameId, adIds, slot));
-            }
+        Set<UUID> anchors = groupFrames.keySet();
+        if (anchors.isEmpty()) {
+            needed.add(adIds.get((int) Math.floorMod(slot, (long) adIds.size())));
+        } else {
+            for (UUID anchor : anchors) needed.add(selectAdForFrame(anchor, adIds, slot));
         }
         return new ArrayList<String>(needed);
+    }
+
+    private static BlockFace rightOf(BlockFace face) {
+        switch (face) {
+            case NORTH: return BlockFace.WEST;
+            case SOUTH: return BlockFace.EAST;
+            case EAST:  return BlockFace.NORTH;
+            case WEST:  return BlockFace.SOUTH;
+            default:    return BlockFace.EAST;
+        }
     }
 
     private static String selectAdForFrame(UUID frameId, List<String> adIds, long slot) {
@@ -738,7 +799,9 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return item;
     }
 
-    private MapView createMapView(final BufferedImage image, final String adId) {
+    private MapView createMapView(final BufferedImage fullImage, final int quadrant) {
+        final int srcX = (quadrant == 1 || quadrant == 3) ? QUADRANT_SIZE : 0;
+        final int srcY = (quadrant == 2 || quadrant == 3) ? QUADRANT_SIZE : 0;
         World world = Bukkit.getWorlds().get(0);
         MapView view = Bukkit.createMap(world);
         for (MapRenderer r : new ArrayList<MapRenderer>(view.getRenderers())) {
@@ -747,7 +810,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         view.addRenderer(new MapRenderer() {
             boolean drawn = false;
             @Override public void render(MapView v, MapCanvas canvas, Player player) {
-                if (!drawn) { canvas.drawImage(0, 0, image); drawn = true; }
+                if (!drawn) {
+                    canvas.drawImage(0, 0, fullImage.getSubimage(srcX, srcY, QUADRANT_SIZE, QUADRANT_SIZE));
+                    drawn = true;
+                }
             }
         });
         return view;
@@ -757,23 +823,31 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (isAccessBlocked()) return;
         if (currentAdIds.isEmpty()) return;
         long currentSlot = System.currentTimeMillis() / ROTATION_SLOT_MS;
-        List<UUID> frameIds;
-        synchronized (trackedFrames) { frameIds = new ArrayList<UUID>(trackedFrames); }
-        for (UUID frameId : frameIds) {
-            Entity ent = Bukkit.getEntity(frameId);
-            if (!(ent instanceof ItemFrame)) continue;
-            String adId = frameAdAssignments.get(frameId);
+        for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
+            UUID[] group = groupFrames.get(anchor);
+            if (group == null) continue;
+            String adId = frameAdAssignments.get(anchor);
             if (adId == null || adId.isEmpty()) continue;
-            ItemFrame frame = (ItemFrame) ent;
-            Location frameLoc = frame.getLocation();
-            World world = frame.getWorld();
-            if (world == null) continue;
+            double sumX = 0, sumY = 0, sumZ = 0;
+            int cnt = 0;
+            World world = null;
+            for (UUID uid : group) {
+                if (uid == null) continue;
+                Entity ent = Bukkit.getEntity(uid);
+                if (!(ent instanceof ItemFrame)) continue;
+                if (world == null) world = ent.getWorld();
+                sumX += ent.getLocation().getX();
+                sumY += ent.getLocation().getY();
+                sumZ += ent.getLocation().getZ();
+                cnt++;
+            }
+            if (cnt == 0 || world == null) continue;
+            Location center = new Location(world, sumX / cnt, sumY / cnt, sumZ / cnt);
             for (Player p : world.getPlayers()) {
-                if (!p.getWorld().equals(world)) continue;
                 Location eye = p.getEyeLocation();
-                double dist = eye.distance(frameLoc);
+                double dist = eye.distance(center);
                 if (dist > ATTENTION_MAX_DIST || dist < 0.5) continue;
-                Vector toFrame = frameLoc.toVector().subtract(eye.toVector());
+                Vector toFrame = center.toVector().subtract(eye.toVector());
                 if (toFrame.lengthSquared() < 1e-6) continue;
                 toFrame.normalize();
                 Vector look = eye.getDirection();
@@ -857,11 +931,11 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private void savePersistentFrames() {
         File f = new File(getDataFolder(), "frames.yml");
         YamlConfiguration cfg = new YamlConfiguration();
-        List<String> uuids = new ArrayList<String>();
-        synchronized (trackedFrames) {
-            for (UUID id : trackedFrames) uuids.add(id.toString());
+        List<String> groups = new ArrayList<String>();
+        for (UUID[] group : groupFrames.values()) {
+            groups.add(group[0] + "|" + group[1] + "|" + group[2] + "|" + group[3]);
         }
-        cfg.set("frames", uuids);
+        cfg.set("groups", groups);
         try {
             if (!getDataFolder().exists()) getDataFolder().mkdirs();
             cfg.save(f);
@@ -874,13 +948,25 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         File f = new File(getDataFolder(), "frames.yml");
         if (!f.exists()) return;
         YamlConfiguration cfg = YamlConfiguration.loadConfiguration(f);
-        List<String> uuids = cfg.getStringList("frames");
+        List<String> groups = cfg.getStringList("groups");
         int loaded = 0;
-        for (String s : uuids) {
-            try { trackedFrames.add(UUID.fromString(s)); loaded++; }
-            catch (Exception ignored) { }
+        for (String s : groups) {
+            String[] parts = s.split("\\|");
+            if (parts.length != 4) continue;
+            UUID[] group = new UUID[4];
+            try {
+                for (int i = 0; i < 4; i++) group[i] = UUID.fromString(parts[i]);
+            } catch (Exception ignored) { continue; }
+            UUID anchor = group[2];
+            groupFrames.put(anchor, group);
+            for (int i = 0; i < 4; i++) {
+                trackedFrames.add(group[i]);
+                frameQuadrant.put(group[i], i);
+                frameAnchor.put(group[i], anchor);
+            }
+            loaded++;
         }
-        if (loaded > 0) getLogger().info("amethystADS loaded " + loaded + " tracked frames");
+        if (loaded > 0) getLogger().info("amethystADS loaded " + loaded + " ad group(s)");
     }
 
     private BufferedImage downloadImage(String imageUrl) throws Exception {
@@ -901,11 +987,11 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         byte[] bytes = readAllBytes(conn.getInputStream());
         BufferedImage src = ImageIO.read(new ByteArrayInputStream(bytes));
         if (src == null) throw new RuntimeException("bad PNG");
-        if (src.getWidth() == 128 && src.getHeight() == 128) return src;
-        BufferedImage scaled = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB);
+        if (src.getWidth() == AD_SIZE && src.getHeight() == AD_SIZE) return src;
+        BufferedImage scaled = new BufferedImage(AD_SIZE, AD_SIZE, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = scaled.createGraphics();
         g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-        g.drawImage(src, 0, 0, 128, 128, null);
+        g.drawImage(src, 0, 0, AD_SIZE, AD_SIZE, null);
         g.dispose();
         return scaled;
     }
