@@ -56,3 +56,7 @@ Run `/aa register` in-game to generate a registration token. Submit that token t
 2. Ads are displayed to players in-game (scoreboard, chat, boss bar, or sign, depending on config).
 3. When a player clicks/interacts with an ad, the plugin sends a signed click event to the edge node.
 4. The edge node verifies the event and credits your server account.
+
+
+
+NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.
