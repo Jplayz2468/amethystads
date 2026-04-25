@@ -1,0 +1,16 @@
+name: amethystads
+version: 1.0.0
+main: net.jplayz.AmethystAdsPlugin
+api-version: "1.15"
+description: Map-ad plugin
+author: amethystads
+commands:
+  amethystads:
+    description: amethystADS admin commands
+    usage: /amethystads <register|give|status|reload|dashboard>
+    permission: amethystads.admin
+    aliases: [aa]
+permissions:
+  amethystads.admin:
+    description: Admin commands (register, give ad tool, show status, open dashboard)
+    default: op
