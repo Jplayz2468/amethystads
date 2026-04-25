@@ -48,7 +48,7 @@ Edit `plugins/amethystads/config.yml` after first run. Key fields:
 | `hmac_secret` | Shared secret used to sign click events sent to the edge node |
 | `edge_node_url` | URL of the amethystADS edge node (default provided) |
 
-Run `/amethystregister` in-game to generate a registration token. Submit that token through the admin panel to complete server registration and receive your `server_id` and `hmac_secret`.
+Run `/aa register` in-game to generate a registration token. Submit that token through the admin panel to complete server registration and receive your `server_id` and `hmac_secret`.
 
 ## How It Works
 
