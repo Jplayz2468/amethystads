@@ -621,14 +621,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             return true;
         }
         Player p = (Player) sender;
-        // Prevent spamming: one pending watch per player
         UUID pid = p.getUniqueId();
-        for (UUID pending : pendingRewardedWatches.values()) {
-            if (pending.equals(pid)) {
-                p.sendMessage(ChatColor.YELLOW + "You already have a pending rewarded ad. Check your previous link.");
-                return true;
-            }
-        }
         String watchId = UUID.randomUUID().toString();
         long expiresAt = System.currentTimeMillis() / 1000L + REWARD_TOKEN_TTL_S;
         String token;
