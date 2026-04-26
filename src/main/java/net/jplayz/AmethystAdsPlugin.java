@@ -53,6 +53,7 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -78,6 +79,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     private static final String DEFAULT_API_URL = "https://us-central1-mcads-493820.cloudfunctions.net/edge-node";
+    private static final String GITHUB_API = "https://api.github.com/repos/Jplayz2468/amethystads/releases/latest";
+    private static final long UPDATE_CHECK_INTERVAL_TICKS = 6L * 60 * 60 * 20; // every 6 hours
+    private static final long UPDATE_ALERT_INTERVAL_TICKS = 30L * 60 * 20;      // every 30 minutes
     private static final String AD_ITEM_NAME = "amethystads ad tool";
     private static final Material AD_ITEM_MATERIAL = Material.BLAZE_ROD;
     private static final String DASHBOARD_TITLE = ChatColor.DARK_AQUA + "amethystADS";
@@ -114,6 +118,12 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private volatile boolean serverVerified = false;
     private final Map<UUID, Long> pendingRegisterReset = new ConcurrentHashMap<UUID, Long>();
     private boolean needsOnboarding = false;
+
+    // Auto-update
+    private volatile boolean updateAvailable = false;
+    private volatile boolean updateDownloaded = false;
+    private volatile String availableVersion = "";
+    private volatile File pendingUpdateFile = null;
 
     // Rewarded-ad system
     private static final String REWARD_PAGE_URL = "https://jplayz.net";
@@ -161,12 +171,34 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() { pollPendingRewards(); }
         }.runTaskTimerAsynchronously(this, 100L, 100L);
+
+        // Check for updates once at startup, then every 6 hours
+        new BukkitRunnable() {
+            @Override public void run() { checkForUpdate(); }
+        }.runTaskLaterAsynchronously(this, 100L);
+        new BukkitRunnable() {
+            @Override public void run() { if (!updateDownloaded) checkForUpdate(); }
+        }.runTaskTimerAsynchronously(this, UPDATE_CHECK_INTERVAL_TICKS, UPDATE_CHECK_INTERVAL_TICKS);
+
+        // Periodically remind admins if an update is waiting
+        new BukkitRunnable() {
+            @Override public void run() {
+                if (updateDownloaded) {
+                    broadcastUpdateAlert(ChatColor.GREEN + "[amethystADS] v" + availableVersion
+                            + " is downloaded — please restart the server to apply the update.");
+                } else if (updateAvailable) {
+                    broadcastUpdateAlert(ChatColor.YELLOW + "[amethystADS] v" + availableVersion
+                            + " is available (current: v" + getDescription().getVersion() + ").");
+                }
+            }
+        }.runTaskTimerAsynchronously(this, UPDATE_ALERT_INTERVAL_TICKS, UPDATE_ALERT_INTERVAL_TICKS);
     }
 
     @Override
     public void onDisable() {
         savePersistentFrames();
         flushImpressions();
+        applyPendingUpdate();
     }
 
     private static final String[][] SUBCOMMANDS = {
@@ -175,6 +207,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         {"status",    "show connection status and stats"},
         {"reload",    "clear image cache and reload ads"},
         {"dashboard", "open the GUI dashboard"},
+        {"update",    "check for plugin updates"},
         {"help",      "list all commands"},
     };
 
@@ -189,6 +222,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             case "status":    return handleStatus(sender);
             case "reload":    return handleReload(sender);
             case "dashboard": return handleDashboard(sender);
+            case "update":    return handleUpdate(sender);
             case "help":      return handleHelp(sender);
             default:          return handleDashboard(sender);
         }
@@ -576,17 +610,31 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent e) {
-        if (!needsOnboarding) return;
         Player p = e.getPlayer();
         if (!p.isOp() && !p.hasPermission("amethystads.admin")) return;
-        new BukkitRunnable() {
-            @Override public void run() {
-                sendOnboardingMessage(p);
-                needsOnboarding = false;
-                getConfig().set("onboarded", true);
-                saveConfig();
-            }
-        }.runTaskLater(this, 20L);
+        if (needsOnboarding) {
+            new BukkitRunnable() {
+                @Override public void run() {
+                    sendOnboardingMessage(p);
+                    needsOnboarding = false;
+                    getConfig().set("onboarded", true);
+                    saveConfig();
+                }
+            }.runTaskLater(this, 20L);
+        }
+        if (updateDownloaded || updateAvailable) {
+            new BukkitRunnable() {
+                @Override public void run() {
+                    if (updateDownloaded) {
+                        p.sendMessage(ChatColor.GREEN + "[amethystADS] v" + availableVersion
+                                + " is downloaded — restart the server to apply the update.");
+                    } else if (updateAvailable) {
+                        p.sendMessage(ChatColor.YELLOW + "[amethystADS] v" + availableVersion
+                                + " update available (current: v" + getDescription().getVersion() + ").");
+                    }
+                }
+            }.runTaskLater(this, 60L);
+        }
     }
 
     private void sendOnboardingMessage(Player p) {
@@ -613,6 +661,155 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
         p.sendMessage("");
         p.sendMessage(ChatColor.DARK_PURPLE + "" + ChatColor.STRIKETHROUGH + "                                        ");
+    }
+
+    private boolean handleUpdate(CommandSender sender) {
+        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
+            sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
+        }
+        String current = getDescription().getVersion();
+        if (updateDownloaded) {
+            sender.sendMessage(ChatColor.GREEN + "[amethystADS] v" + availableVersion
+                    + " is downloaded. Restart the server to apply it.");
+        } else if (updateAvailable) {
+            sender.sendMessage(ChatColor.YELLOW + "[amethystADS] v" + availableVersion
+                    + " is available (current: v" + current + "). Downloading…");
+        } else {
+            sender.sendMessage(ChatColor.AQUA + "[amethystADS] Running v" + current + ". Checking for updates…");
+            new BukkitRunnable() {
+                @Override public void run() { checkForUpdate(); }
+            }.runTaskAsynchronously(this);
+        }
+        return true;
+    }
+
+    private void checkForUpdate() {
+        try {
+            String current = getDescription().getVersion();
+            URL url = new URL(GITHUB_API);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestProperty("User-Agent", "AmethystAds-Updater/" + current);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            if (conn.getResponseCode() != 200) return;
+            String json = readAllText(conn.getInputStream());
+
+            String tagName = extractJsonField(json, "tag_name");
+            String downloadUrl = extractJsonField(json, "browser_download_url");
+            if (tagName.isEmpty() || downloadUrl.isEmpty()) return;
+
+            String latest = tagName.replaceFirst("^v", "");
+            if (!isNewerVersion(latest, current)) {
+                getLogger().info("amethystADS is up to date (v" + current + ").");
+                return;
+            }
+
+            availableVersion = latest;
+            updateAvailable = true;
+            getLogger().info("amethystADS update available: v" + latest + " (current: v" + current + "). Downloading…");
+            broadcastUpdateAlert(ChatColor.YELLOW + "[amethystADS] Update v" + latest
+                    + " available (current: v" + current + "). Downloading automatically…");
+
+            downloadUpdate(downloadUrl);
+
+            updateDownloaded = true;
+            getLogger().info("amethystADS v" + latest + " downloaded. Restart the server to apply.");
+            broadcastUpdateAlert(ChatColor.GREEN + "[amethystADS] v" + latest
+                    + " downloaded. Please restart the server to apply the update.");
+
+        } catch (Exception e) {
+            getLogger().warning("amethystADS update check failed: " + e.getMessage());
+        }
+    }
+
+    private void downloadUpdate(String downloadUrl) throws Exception {
+        File pluginDir = getFile().getParentFile();
+        File updateFile = new File(pluginDir, getFile().getName() + ".update");
+        // Follow redirects manually — GitHub release assets redirect to S3
+        String urlStr = downloadUrl;
+        for (int i = 0; i < 5; i++) {
+            URL url = new URL(urlStr);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setRequestProperty("User-Agent", "AmethystAds-Updater");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            int code = conn.getResponseCode();
+            if (code >= 300 && code < 400) {
+                urlStr = conn.getHeaderField("Location");
+                conn.disconnect();
+                continue;
+            }
+            if (code != 200) throw new RuntimeException("HTTP " + code);
+            InputStream in = conn.getInputStream();
+            FileOutputStream out = new FileOutputStream(updateFile);
+            try {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            } finally {
+                out.close();
+                in.close();
+            }
+            pendingUpdateFile = updateFile;
+            return;
+        }
+        throw new RuntimeException("Too many redirects");
+    }
+
+    private void applyPendingUpdate() {
+        if (pendingUpdateFile == null || !pendingUpdateFile.exists()) return;
+        File target = getFile();
+        boolean deleted = target.delete();
+        if (deleted) {
+            if (pendingUpdateFile.renameTo(target)) {
+                getLogger().info("amethystADS update applied. Ready on next start.");
+            } else {
+                getLogger().warning("amethystADS update: could not rename update file to " + target.getName()
+                        + ". Manually replace the JAR with " + pendingUpdateFile.getName());
+            }
+        } else {
+            getLogger().warning("amethystADS update: could not replace JAR (file locked?). "
+                    + "Manually replace " + target.getName() + " with " + pendingUpdateFile.getName());
+        }
+    }
+
+    private void broadcastUpdateAlert(final String msg) {
+        Bukkit.getScheduler().runTask(this, new Runnable() {
+            @Override public void run() {
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (p.isOp() || p.hasPermission("amethystads.admin")) p.sendMessage(msg);
+                }
+            }
+        });
+        getLogger().info(ChatColor.stripColor(msg));
+    }
+
+    private static boolean isNewerVersion(String latest, String current) {
+        try {
+            String[] l = latest.replaceFirst("^v", "").split("\\.");
+            String[] c = current.replaceFirst("^v", "").split("\\.");
+            int len = Math.max(l.length, c.length);
+            for (int i = 0; i < len; i++) {
+                int lv = i < l.length ? Integer.parseInt(l[i].replaceAll("[^0-9].*", "")) : 0;
+                int cv = i < c.length ? Integer.parseInt(c[i].replaceAll("[^0-9].*", "")) : 0;
+                if (lv > cv) return true;
+                if (lv < cv) return false;
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static String extractJsonField(String json, String key) {
+        String search = "\"" + key + "\":\"";
+        int start = json.indexOf(search);
+        if (start < 0) return "";
+        start += search.length();
+        int end = json.indexOf("\"", start);
+        return end < 0 ? "" : json.substring(start, end);
     }
 
     private boolean handleRewardedAd(CommandSender sender) {
