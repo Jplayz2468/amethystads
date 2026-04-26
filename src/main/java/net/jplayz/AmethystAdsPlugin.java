@@ -115,6 +115,12 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private final Map<UUID, Long> pendingRegisterReset = new ConcurrentHashMap<UUID, Long>();
     private boolean needsOnboarding = false;
 
+    // Rewarded-ad system
+    private static final String REWARD_PAGE_URL = "https://jplayz.net";
+    private static final long REWARD_TOKEN_TTL_S = 1800L;
+    private final Map<String, UUID> pendingRewardedWatches = new ConcurrentHashMap<String, UUID>();
+    private final Map<String, Long> rewardedWatchExpiry = new ConcurrentHashMap<String, Long>();
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -151,6 +157,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() { scanAttention(); }
         }.runTaskTimer(this, 100L, 100L);
+
+        new BukkitRunnable() {
+            @Override public void run() { pollPendingRewards(); }
+        }.runTaskTimerAsynchronously(this, 100L, 100L);
     }
 
     @Override
@@ -170,6 +180,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (command.getName().equalsIgnoreCase("rewardedad")) return handleRewardedAd(sender);
         if (!command.getName().equalsIgnoreCase("amethystads")) return false;
         String sub = args.length > 0 ? args[0].toLowerCase() : "";
         switch (sub) {
@@ -602,6 +613,128 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
         p.sendMessage("");
         p.sendMessage(ChatColor.DARK_PURPLE + "" + ChatColor.STRIKETHROUGH + "                                        ");
+    }
+
+    private boolean handleRewardedAd(CommandSender sender) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "Must be run as a player.");
+            return true;
+        }
+        Player p = (Player) sender;
+        // Prevent spamming: one pending watch per player
+        UUID pid = p.getUniqueId();
+        for (UUID pending : pendingRewardedWatches.values()) {
+            if (pending.equals(pid)) {
+                p.sendMessage(ChatColor.YELLOW + "You already have a pending rewarded ad. Check your previous link.");
+                return true;
+            }
+        }
+        String watchId = UUID.randomUUID().toString();
+        long expiresAt = System.currentTimeMillis() / 1000L + REWARD_TOKEN_TTL_S;
+        String token;
+        try {
+            token = makeRewardedToken(watchId, pid, expiresAt);
+        } catch (Exception e) {
+            p.sendMessage(ChatColor.RED + "Failed to generate ad link.");
+            getLogger().warning("Rewarded token generation failed: " + e.getMessage());
+            return true;
+        }
+        pendingRewardedWatches.put(watchId, pid);
+        rewardedWatchExpiry.put(watchId, expiresAt * 1000L);
+        String link = REWARD_PAGE_URL + "/?t=" + token;
+        ClickEvent click = new ClickEvent(ClickEvent.Action.OPEN_URL, link);
+        HoverEvent hover = new HoverEvent(HoverEvent.Action.SHOW_TEXT,
+                new BaseComponent[]{ new TextComponent("Click to open in your browser") });
+
+        p.sendMessage("");
+        TextComponent header = new TextComponent("▬▬▬▬ Rewarded Ad ▬▬▬▬");
+        header.setColor(net.md_5.bungee.api.ChatColor.GOLD);
+        header.setBold(true);
+        p.spigot().sendMessage(header);
+
+        TextComponent desc = new TextComponent("Watch a 10-second ad to earn a reward!");
+        desc.setColor(net.md_5.bungee.api.ChatColor.WHITE);
+        p.spigot().sendMessage(desc);
+
+        TextComponent action = new TextComponent("  ▶ Click here to open the ad in your browser");
+        action.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
+        action.setUnderlined(true);
+        action.setClickEvent(click);
+        action.setHoverEvent(hover);
+        p.spigot().sendMessage(action);
+
+        TextComponent note = new TextComponent("Once you finish watching, return here for your reward.");
+        note.setColor(net.md_5.bungee.api.ChatColor.GRAY);
+        p.spigot().sendMessage(note);
+        p.sendMessage("");
+        return true;
+    }
+
+    private String makeRewardedToken(String watchId, UUID playerUuid, long expiresAt) throws Exception {
+        String canonical = watchId + "|" + serverId + "|" + playerUuid + "|" + expiresAt;
+        String sig = hmacSha256Hex(serverSecret, canonical);
+        String payload = canonical + "|" + sig;
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void pollPendingRewards() {
+        if (pendingRewardedWatches.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        // Expire stale watches
+        Iterator<Map.Entry<String, Long>> it = rewardedWatchExpiry.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<String, Long> e = it.next();
+            if (now > e.getValue()) {
+                final UUID pid = pendingRewardedWatches.remove(e.getKey());
+                it.remove();
+                if (pid != null) {
+                    Bukkit.getScheduler().runTask(this, new Runnable() {
+                        @Override public void run() {
+                            Player p = Bukkit.getPlayer(pid);
+                            if (p != null)
+                                p.sendMessage(ChatColor.RED + "Your rewarded ad link expired. Run /rewardedad again.");
+                        }
+                    });
+                }
+            }
+        }
+        // Poll each remaining watch
+        for (Map.Entry<String, UUID> entry : new ArrayList<Map.Entry<String, UUID>>(pendingRewardedWatches.entrySet())) {
+            final String watchId = entry.getKey();
+            final UUID pid = entry.getValue();
+            try {
+                boolean done = fetchRewardPollResult(watchId);
+                if (done) {
+                    pendingRewardedWatches.remove(watchId);
+                    rewardedWatchExpiry.remove(watchId);
+                    Bukkit.getScheduler().runTask(this, new Runnable() {
+                        @Override public void run() {
+                            Player p = Bukkit.getPlayer(pid);
+                            if (p != null) {
+                                p.sendMessage(ChatColor.GREEN + "" + ChatColor.BOLD + "Ad watched! "
+                                        + ChatColor.GREEN + "Reward unlocked.");
+                                // TODO: grant reward here (e.g. give item, run command)
+                            }
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                getLogger().warning("Reward poll failed watchId=" + watchId + ": " + e.getMessage());
+            }
+        }
+    }
+
+    private boolean fetchRewardPollResult(String watchId) throws Exception {
+        URL url = new URL(REWARD_PAGE_URL + "/api/poll?w=" + watchId);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setConnectTimeout(5000);
+        conn.setReadTimeout(5000);
+        int status = conn.getResponseCode();
+        if (status != 200) return false;
+        String body = readAllText(conn.getInputStream());
+        return body.contains("\"done\":true");
     }
 
     private boolean isAdItem(ItemStack item) {

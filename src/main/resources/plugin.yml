@@ -10,6 +10,10 @@ commands:
     usage: /amethystads <register|give|status|reload|dashboard>
     permission: amethystads.admin
     aliases: [aa]
+  rewardedad:
+    description: Watch a short ad to earn an in-game reward
+    usage: /rewardedad
+    aliases: [rad]
 permissions:
   amethystads.admin:
     description: Admin commands (register, give ad tool, show status, open dashboard)
