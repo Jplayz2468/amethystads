@@ -23,6 +23,13 @@ dependencies {
     compileOnly 'net.md-5:bungeecord-chat:1.21-R0.4'
 }
 
+processResources {
+    filesMatching('plugin.yml') {
+        expand(version: project.version)
+    }
+    filteringCharset = 'UTF-8'
+}
+
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }

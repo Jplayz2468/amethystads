@@ -1,5 +1,5 @@
 name: amethystads
-version: 1.0.0
+version: ${version}
 main: net.jplayz.AmethystAdsPlugin
 api-version: "1.15"
 description: Map-ad plugin
