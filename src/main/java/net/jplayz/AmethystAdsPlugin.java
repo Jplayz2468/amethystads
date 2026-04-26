@@ -455,10 +455,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onInventoryClick(InventoryClickEvent e) {
         if (!(e.getWhoClicked() instanceof Player)) return;
-        e.setCancelled(true);
         Player p = (Player) e.getWhoClicked();
         String title = e.getView().getTitle();
         if (DASHBOARD_TITLE.equals(title)) {
+            e.setCancelled(true);
             switch (e.getRawSlot()) {
                 case 10:
                     p.closeInventory();
