@@ -32,6 +32,23 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Inject version into build.gradle
+        run: |
+          INPUT_VERSION="${{ github.event.inputs.version }}"
+          echo "=== Version injection ==="
+          echo "Target version: $INPUT_VERSION"
+          OLD=$(grep "^version = " build.gradle)
+          echo "Before: $OLD"
+          sed -i "s/^version = '.*'/version = '$INPUT_VERSION'/" build.gradle
+          NEW=$(grep "^version = " build.gradle)
+          echo "After:  $NEW"
+          if [ "$OLD" = "$NEW" ]; then
+            echo "ERROR: version was not changed (old and new are identical)" >&2
+            exit 1
+          fi
+          echo "Version successfully injected into build.gradle"
+          echo "plugin.yml will receive version via Gradle processResources (placeholder: \${version})"
+
       - name: Build JAR
         run: gradle build --no-daemon
 
