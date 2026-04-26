@@ -118,6 +118,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private volatile boolean serverVerified = false;
     private final Map<UUID, Long> pendingRegisterReset = new ConcurrentHashMap<UUID, Long>();
     private boolean needsOnboarding = false;
+    private volatile boolean adsEnabled = true;
 
     // Auto-update
     private volatile boolean updateAvailable = false;
@@ -151,6 +152,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         saveConfig();
 
         if (!cfg.getBoolean("onboarded", false)) needsOnboarding = true;
+        adsEnabled = cfg.getBoolean("ads-enabled", true);
 
         getLogger().info("amethystADS server-id " + serverId);
         loadPersistentFrames();
@@ -207,6 +209,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         {"status",    "show connection status and stats"},
         {"reload",    "clear image cache and reload ads"},
         {"dashboard", "open the GUI dashboard"},
+        {"toggle",    "toggle all banner ads on or off"},
         {"update",    "check for plugin updates"},
         {"help",      "list all commands"},
     };
@@ -220,6 +223,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             case "register":  return handleRegister(sender, args);
             case "give":      return handleGive(sender);
             case "status":    return handleStatus(sender);
+            case "toggle":    return handleToggle(sender);
             case "reload":    return handleReload(sender);
             case "dashboard": return handleDashboard(sender);
             case "update":    return handleUpdate(sender);
@@ -389,6 +393,37 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return true;
     }
 
+    private boolean handleToggle(CommandSender sender) {
+        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
+            sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
+        }
+        adsEnabled = !adsEnabled;
+        getConfig().set("ads-enabled", adsEnabled);
+        saveConfig();
+        if (adsEnabled) {
+            long slot = System.currentTimeMillis() / ROTATION_SLOT_MS;
+            updateAllFrames(currentAdIds, slot);
+            sender.sendMessage(ChatColor.GREEN + "Banner ads enabled.");
+        } else {
+            clearAllFrameItems();
+            sender.sendMessage(ChatColor.YELLOW + "Banner ads disabled.");
+        }
+        return true;
+    }
+
+    private void clearAllFrameItems() {
+        for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
+            UUID[] group = groupFrames.get(anchor);
+            if (group == null) continue;
+            for (UUID uid : group) {
+                if (uid == null) continue;
+                Entity ent = Bukkit.getEntity(uid);
+                if (ent instanceof ItemFrame) ((ItemFrame) ent).setItem(null);
+            }
+        }
+    }
+
     private boolean handleDashboard(CommandSender sender) {
         if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
             sender.sendMessage(ChatColor.RED + "Permission denied");
@@ -435,6 +470,11 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         inv.setItem(20, dashItem(Material.REPEATER, ChatColor.YELLOW + "reload",
                 Collections.singletonList(ChatColor.GRAY + "click to clear cache and reload")));
 
+        inv.setItem(22, dashItem(
+                adsEnabled ? Material.LIME_CONCRETE : Material.RED_CONCRETE,
+                adsEnabled ? ChatColor.GREEN + "Ads: ON" : ChatColor.RED + "Ads: OFF",
+                Collections.singletonList(ChatColor.GRAY + "click to toggle")));
+
         inv.setItem(24, dashItem(Material.BLAZE_ROD, ChatColor.AQUA + "get ad tool",
                 Collections.singletonList(ChatColor.GRAY + "click to receive the ad tool")));
 
@@ -470,7 +510,8 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                     id.setColor(net.md_5.bungee.api.ChatColor.WHITE);
                     p.spigot().sendMessage(btn, id);
                     break;
-                case 20: p.closeInventory(); handleReload(p); break;
+                case 20: p.closeInventory(); handleReload(p);  break;
+                case 22: p.closeInventory(); handleToggle(p); break;
                 case 24: p.closeInventory(); handleGive(p);   break;
             }
         }
@@ -596,6 +637,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent e) {
+        if (!adsEnabled) return;
         if (currentAdIds.isEmpty()) return;
         Set<UUID> anchorsToUpdate = new HashSet<UUID>();
         for (Entity ent : e.getChunk().getEntities()) {
@@ -1061,6 +1103,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void updateAllFrames(List<String> adIds, long slot) {
+        if (!adsEnabled) return;
         if (adIds.isEmpty()) return;
         for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
             updateGroup(anchor, adIds, slot);
@@ -1143,6 +1186,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void scanAttention() {
+        if (!adsEnabled) return;
         if (isAccessBlocked()) return;
         if (currentAdIds.isEmpty()) return;
         long currentSlot = System.currentTimeMillis() / ROTATION_SLOT_MS;
