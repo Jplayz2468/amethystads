@@ -170,9 +170,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             @Override public void run() { scanAttention(); }
         }.runTaskTimer(this, 100L, 100L);
 
-        new BukkitRunnable() {
-            @Override public void run() { pollPendingRewards(); }
-        }.runTaskTimerAsynchronously(this, 100L, 100L);
+        // Reward polling is now driven per-watch by startRewardPollTask()
 
         // Check for updates once at startup, then every 6 hours
         new BukkitRunnable() {
@@ -873,6 +871,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         }
         pendingRewardedWatches.put(watchId, pid);
         rewardedWatchExpiry.put(watchId, expiresAt * 1000L);
+        startRewardPollTask(watchId, pid, expiresAt * 1000L);
         String link = REWARD_PAGE_URL + "/?t=" + token;
         ClickEvent click = new ClickEvent(ClickEvent.Action.OPEN_URL, link);
         HoverEvent hover = new HoverEvent(HoverEvent.Action.SHOW_TEXT,
@@ -910,51 +909,56 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 .encodeToString(payload.getBytes(StandardCharsets.UTF_8));
     }
 
-    private void pollPendingRewards() {
-        if (pendingRewardedWatches.isEmpty()) return;
-        long now = System.currentTimeMillis();
-        // Expire stale watches
-        Iterator<Map.Entry<String, Long>> it = rewardedWatchExpiry.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry<String, Long> e = it.next();
-            if (now > e.getValue()) {
-                final UUID pid = pendingRewardedWatches.remove(e.getKey());
-                it.remove();
-                if (pid != null) {
-                    Bukkit.getScheduler().runTask(this, new Runnable() {
-                        @Override public void run() {
-                            Player p = Bukkit.getPlayer(pid);
-                            if (p != null)
-                                p.sendMessage(ChatColor.RED + "Your rewarded ad link expired. Run /rewardedad again.");
-                        }
-                    });
-                }
-            }
-        }
-        // Poll each remaining watch
-        for (Map.Entry<String, UUID> entry : new ArrayList<Map.Entry<String, UUID>>(pendingRewardedWatches.entrySet())) {
-            final String watchId = entry.getKey();
-            final UUID pid = entry.getValue();
-            try {
-                boolean done = fetchRewardPollResult(watchId);
-                if (done) {
-                    pendingRewardedWatches.remove(watchId);
-                    rewardedWatchExpiry.remove(watchId);
-                    Bukkit.getScheduler().runTask(this, new Runnable() {
-                        @Override public void run() {
-                            Player p = Bukkit.getPlayer(pid);
-                            if (p != null) {
-                                p.sendMessage(ChatColor.GREEN + "" + ChatColor.BOLD + "Ad watched! "
-                                        + ChatColor.GREEN + "Reward unlocked.");
-                                // TODO: grant reward here (e.g. give item, run command)
+    /**
+     * Starts a dedicated async task for one watch session.  The task holds a
+     * long-poll connection to /api/poll (the server blocks for up to 25 s).
+     * When the Cloudflare Durable Object marks the session done it resolves
+     * the connection instantly; the task grants the reward and exits.
+     * On timeout ({done:false}) the task retries immediately, keeping an
+     * effectively continuous connection until the session expires.
+     */
+    private void startRewardPollTask(final String watchId, final UUID pid, final long expiryMs) {
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                while (!Thread.currentThread().isInterrupted() && isEnabled()) {
+                    if (System.currentTimeMillis() > expiryMs) {
+                        pendingRewardedWatches.remove(watchId);
+                        rewardedWatchExpiry.remove(watchId);
+                        Bukkit.getScheduler().runTask(AmethystAdsPlugin.this, new Runnable() {
+                            @Override public void run() {
+                                Player p = Bukkit.getPlayer(pid);
+                                if (p != null)
+                                    p.sendMessage(ChatColor.RED + "Your rewarded ad link expired. Run /rewardedad again.");
                             }
+                        });
+                        return;
+                    }
+                    try {
+                        boolean done = fetchRewardPollResult(watchId);
+                        if (done) {
+                            pendingRewardedWatches.remove(watchId);
+                            rewardedWatchExpiry.remove(watchId);
+                            Bukkit.getScheduler().runTask(AmethystAdsPlugin.this, new Runnable() {
+                                @Override public void run() {
+                                    Player p = Bukkit.getPlayer(pid);
+                                    if (p != null) {
+                                        p.sendMessage(ChatColor.GREEN + "" + ChatColor.BOLD + "Ad watched! "
+                                                + ChatColor.GREEN + "Reward unlocked.");
+                                        // TODO: grant reward here (e.g. give item, run command)
+                                    }
+                                }
+                            });
+                            return;
                         }
-                    });
+                        // Server returned {done:false} (long-poll timed out) — retry immediately
+                    } catch (Exception e) {
+                        getLogger().warning("Reward poll failed watchId=" + watchId + ": " + e.getMessage());
+                        try { Thread.sleep(2000); } catch (InterruptedException ie) { return; }
+                    }
                 }
-            } catch (Exception e) {
-                getLogger().warning("Reward poll failed watchId=" + watchId + ": " + e.getMessage());
             }
-        }
+        }.runTaskAsynchronously(this);
     }
 
     private boolean fetchRewardPollResult(String watchId) throws Exception {
@@ -962,7 +966,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("GET");
         conn.setConnectTimeout(5000);
-        conn.setReadTimeout(5000);
+        conn.setReadTimeout(30000); // long-poll: server holds for up to 25 s then returns {done:false}
         int status = conn.getResponseCode();
         if (status != 200) return false;
         String body = readAllText(conn.getInputStream());
