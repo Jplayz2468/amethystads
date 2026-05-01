@@ -7,10 +7,10 @@ author: amethystads
 commands:
   amethystads:
     description: amethystADS admin commands
-    usage: /amethystads <register|give|status|reload|dashboard>
+    usage: /amethystads <register|give|reload>
     permission: amethystads.admin
     aliases: [aa]
 permissions:
   amethystads.admin:
-    description: Admin commands (register, give ad tool, show status, open dashboard)
+    description: Admin commands (register, give ad tool, reload)
     default: op

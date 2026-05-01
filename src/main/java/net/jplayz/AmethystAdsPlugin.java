@@ -25,12 +25,10 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.hanging.HangingBreakEvent;
-import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
-import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -53,7 +51,6 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -79,18 +76,13 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     private static final String DEFAULT_API_URL = "https://api.jplayz.net";
-    private static final String GITHUB_API = "https://api.github.com/repos/Jplayz2468/amethystads/releases/latest";
-    private static final long UPDATE_CHECK_INTERVAL_TICKS = 6L * 60 * 60 * 20; // every 6 hours
-    private static final long UPDATE_ALERT_INTERVAL_TICKS = 30L * 60 * 20;      // every 30 minutes
+    private static final String WEBSITE_URL = "https://admin.jplayz.net";
     private static final String AD_ITEM_NAME = "amethystads ad tool";
     private static final Material AD_ITEM_MATERIAL = Material.BLAZE_ROD;
-    private static final String DASHBOARD_TITLE = ChatColor.DARK_AQUA + "amethystADS";
-    private static final double CREDITS_PER_DOLLAR = 100.0;
     private static final long ROTATION_SLOT_MS = 20_000L;
     private static final long CACHE_EXPIRY_MS  = 10 * 60 * 1000L;
     private static final double ATTENTION_DOT = 0.93;
     private static final double ATTENTION_MAX_DIST = 32.0;
-    private static final String ACCESS_DISCORD = "https://discord.gg/KkNfCQjczs";
     private static final int AD_SIZE = 256;
     private static final int QUADRANT_SIZE = 128;
 
@@ -102,11 +94,33 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private volatile String currentImageBase = "";
     private volatile long renderedRotationSlot = Long.MIN_VALUE;
     private volatile String lastPollFailure = "";
-    private volatile long lastSuccessfulPollMs = 0L;
-    private volatile boolean accessBlocked = false;
-    private volatile String accessBlockReason = "";
+    private volatile boolean connected = false;
     private final Map<String, MapView> mapCache = new ConcurrentHashMap<String, MapView>();
+    private final Map<String, QuadRenderer> mapRenderers = new ConcurrentHashMap<String, QuadRenderer>();
     private final Map<String, Long> mapCacheTimestamps = new ConcurrentHashMap<String, Long>();
+    private volatile String lastImpressionFlushFailure = "";
+
+    private static final class QuadRenderer extends MapRenderer {
+        private final int srcX;
+        private final int srcY;
+        private volatile BufferedImage image;
+        private volatile boolean drawn;
+        QuadRenderer(int quadrant) {
+            this.srcX = (quadrant == 1 || quadrant == 3) ? QUADRANT_SIZE : 0;
+            this.srcY = (quadrant == 2 || quadrant == 3) ? QUADRANT_SIZE : 0;
+        }
+        void setImage(BufferedImage img) {
+            this.image = img;
+            this.drawn = false;
+        }
+        @Override public void render(MapView v, MapCanvas canvas, Player p) {
+            BufferedImage img = image;
+            if (!drawn && img != null) {
+                canvas.drawImage(0, 0, img.getSubimage(srcX, srcY, QUADRANT_SIZE, QUADRANT_SIZE));
+                drawn = true;
+            }
+        }
+    }
     private final Map<UUID, String> frameAdAssignments = new ConcurrentHashMap<UUID, String>();
     private final Set<UUID> trackedFrames = Collections.synchronizedSet(new HashSet<UUID>());
     private final Map<UUID, Integer> frameQuadrant = new ConcurrentHashMap<UUID, Integer>();
@@ -114,17 +128,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private final Map<UUID, UUID[]> groupFrames = new ConcurrentHashMap<UUID, UUID[]>();
     private final Map<String, Long> slotByPlayerAd = new ConcurrentHashMap<String, Long>();
     private final Map<String, Integer> pendingImpressionCounts = new ConcurrentHashMap<String, Integer>();
-    private volatile double currentCredits = 0.0;
-    private volatile boolean serverVerified = false;
-    private final Map<UUID, Long> pendingRegisterReset = new ConcurrentHashMap<UUID, Long>();
-    private boolean needsOnboarding = false;
-    private volatile boolean adsEnabled = true;
-
-    // Auto-update
-    private volatile boolean updateAvailable = false;
-    private volatile boolean updateDownloaded = false;
-    private volatile String availableVersion = "";
-    private volatile File pendingUpdateFile = null;
 
     @Override
     public void onEnable() {
@@ -145,9 +148,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (apiUrl == null || apiUrl.isEmpty()) apiUrl = DEFAULT_API_URL;
         saveConfig();
 
-        if (!cfg.getBoolean("onboarded", false)) needsOnboarding = true;
-        adsEnabled = cfg.getBoolean("ads-enabled", true);
-
         getLogger().info("amethystADS server-id " + serverId);
         loadPersistentFrames();
         Bukkit.getPluginManager().registerEvents(this, this);
@@ -163,45 +163,18 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() { scanAttention(); }
         }.runTaskTimer(this, 100L, 100L);
-
-        // Check for updates once at startup, then every 6 hours
-        new BukkitRunnable() {
-            @Override public void run() { checkForUpdate(); }
-        }.runTaskLaterAsynchronously(this, 100L);
-        new BukkitRunnable() {
-            @Override public void run() { if (!updateDownloaded) checkForUpdate(); }
-        }.runTaskTimerAsynchronously(this, UPDATE_CHECK_INTERVAL_TICKS, UPDATE_CHECK_INTERVAL_TICKS);
-
-        // Periodically remind admins if an update is waiting
-        new BukkitRunnable() {
-            @Override public void run() {
-                if (updateDownloaded) {
-                    broadcastUpdateAlert(ChatColor.GREEN + "[amethystADS] v" + availableVersion
-                            + " is downloaded — please restart the server to apply the update.");
-                } else if (updateAvailable) {
-                    broadcastUpdateAlert(ChatColor.YELLOW + "[amethystADS] v" + availableVersion
-                            + " is available (current: v" + getDescription().getVersion() + ").");
-                }
-            }
-        }.runTaskTimerAsynchronously(this, UPDATE_ALERT_INTERVAL_TICKS, UPDATE_ALERT_INTERVAL_TICKS);
     }
 
     @Override
     public void onDisable() {
         savePersistentFrames();
         flushImpressions();
-        applyPendingUpdate();
     }
 
     private static final String[][] SUBCOMMANDS = {
-        {"register",  "get a registration token for the admin panel"},
-        {"give",      "receive the ad placement tool"},
-        {"status",    "show connection status and stats"},
-        {"reload",    "clear image cache and reload ads"},
-        {"dashboard", "open the GUI dashboard"},
-        {"toggle",    "toggle all banner ads on or off"},
-        {"update",    "check for plugin updates"},
-        {"help",      "list all commands"},
+        {"register", "get a registration token for the website"},
+        {"give",     "receive the ad placement tool"},
+        {"reload",   "clear image cache and reload ads"},
     };
 
     @Override
@@ -209,15 +182,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (!command.getName().equalsIgnoreCase("amethystads")) return false;
         String sub = args.length > 0 ? args[0].toLowerCase() : "";
         switch (sub) {
-            case "register":  return handleRegister(sender, args);
-            case "give":      return handleGive(sender);
-            case "status":    return handleStatus(sender);
-            case "toggle":    return handleToggle(sender);
-            case "reload":    return handleReload(sender);
-            case "dashboard": return handleDashboard(sender);
-            case "update":    return handleUpdate(sender);
-            case "help":      return handleHelp(sender);
-            default:          return handleDashboard(sender);
+            case "register": return handleRegister(sender);
+            case "give":     return handleGive(sender);
+            case "reload":   return handleReload(sender);
+            default:         return handleDefault(sender);
         }
     }
 
@@ -232,58 +200,35 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             }
             return out;
         }
-        if (args.length == 2 && args[0].equalsIgnoreCase("register")) {
-            return "reset".startsWith(args[1].toLowerCase())
-                    ? Collections.singletonList("reset")
-                    : Collections.emptyList();
-        }
         return Collections.emptyList();
     }
 
-    private boolean handleHelp(CommandSender sender) {
-        sender.sendMessage(ChatColor.DARK_PURPLE + "" + ChatColor.STRIKETHROUGH + "                                        ");
-        sender.sendMessage(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + " amethystADS commands");
-        sender.sendMessage("");
-        for (String[] sc : SUBCOMMANDS) {
-            sender.sendMessage(ChatColor.YELLOW + "  /aa " + sc[0] + ChatColor.GRAY + " — " + sc[1]);
-        }
-        sender.sendMessage(ChatColor.DARK_GRAY + "  /aa register reset " + ChatColor.GRAY + "— generate a new server-id (destructive, requires confirmation)");
-        sender.sendMessage("");
-        sender.sendMessage(ChatColor.DARK_PURPLE + "" + ChatColor.STRIKETHROUGH + "                                        ");
-        return true;
-    }
-
-    private boolean handleRegister(CommandSender sender, String[] args) {
+    private boolean handleDefault(CommandSender sender) {
         if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
             sender.sendMessage(ChatColor.RED + "Permission denied");
             return true;
         }
-        boolean isReset = args.length > 1 && args[1].equalsIgnoreCase("reset");
-        if (isReset) {
-            if (!(sender instanceof Player)) {
-                sender.sendMessage(ChatColor.RED + "Run from in-game to confirm reset.");
-                return true;
-            }
-            UUID pid = ((Player) sender).getUniqueId();
-            Long pending = pendingRegisterReset.get(pid);
-            if (pending == null || System.currentTimeMillis() - pending > 30_000L) {
-                pendingRegisterReset.put(pid, System.currentTimeMillis());
-                sender.sendMessage(ChatColor.RED + "" + ChatColor.BOLD + "WARNING: " + ChatColor.RED +
-                        "This generates a brand-new server-id and secret, breaking your existing registration.");
-                sender.sendMessage(ChatColor.YELLOW + "Run " + ChatColor.WHITE + "/aa register reset" +
-                        ChatColor.YELLOW + " again within 30 seconds to confirm.");
-                return true;
-            }
-            pendingRegisterReset.remove(pid);
-            serverId = UUID.randomUUID().toString();
-            serverSecret = randomHex(32);
-            getConfig().set("server-id", serverId);
-            getConfig().set("server-secret", serverSecret);
-            saveConfig();
-            sender.sendMessage(ChatColor.GREEN + "New server-id generated. Use the token below to re-register in the admin panel.");
+        if (connected) {
+            sender.sendMessage(ChatColor.GREEN + "amethystADS connected. " + ChatColor.GRAY
+                    + "Use " + ChatColor.WHITE + "/aa give" + ChatColor.GRAY
+                    + " for the ad tool, or visit the website to manage your account.");
+        } else {
+            sender.sendMessage(ChatColor.YELLOW + "amethystADS is not connected yet.");
+            if (!lastPollFailure.isEmpty())
+                sender.sendMessage(ChatColor.GRAY + "  reason: " + ChatColor.RED + lastPollFailure);
+            sender.sendMessage(ChatColor.GRAY + "  run " + ChatColor.WHITE + "/aa register"
+                    + ChatColor.GRAY + " and paste the token on the website to set this server up.");
+        }
+        sendWebsiteLink(sender);
+        return true;
+    }
+
+    private boolean handleRegister(CommandSender sender) {
+        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
+            sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
         }
         String token = buildRegistrationToken();
-        getLogger().info("amethystADS registration token generated for server-id " + serverId);
         sender.sendMessage(ChatColor.YELLOW + "amethystADS registration token:");
         if (sender instanceof Player) {
             TextComponent button = new TextComponent("[click to copy]");
@@ -297,6 +242,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         } else {
             sender.sendMessage(ChatColor.WHITE + token);
         }
+        sendWebsiteLink(sender);
         return true;
     }
 
@@ -307,13 +253,14 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private boolean handleGive(CommandSender sender) {
-        if (isAccessBlocked()) {
-            sendAccessBlockedMessage(sender);
-            return true;
-        }
         if (!(sender instanceof Player)) { sender.sendMessage("Must be a player."); return true; }
         if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
             sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
+        }
+        if (!connected) {
+            sender.sendMessage(ChatColor.YELLOW + "amethystADS is not set up yet — register on the website first.");
+            sendWebsiteLink(sender);
             return true;
         }
         ItemStack item = new ItemStack(AD_ITEM_MATERIAL);
@@ -331,46 +278,17 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return true;
     }
 
-    private boolean handleStatus(CommandSender sender) {
-        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
-            sender.sendMessage(ChatColor.RED + "Permission denied");
-            return true;
-        }
-        sender.sendMessage(ChatColor.YELLOW + "amethystADS status");
-        sender.sendMessage(ChatColor.GRAY + "server-id: " + ChatColor.WHITE + serverId);
-        sender.sendMessage(ChatColor.GRAY + "api-url: " + ChatColor.WHITE + apiUrl);
-        sender.sendMessage(ChatColor.GRAY + "loaded ads: " + ChatColor.WHITE + currentAdIds.size());
-        sender.sendMessage(ChatColor.GRAY + "tracked ads: " + ChatColor.WHITE + groupFrames.size());
-        sender.sendMessage(ChatColor.GRAY + "cached maps: " + ChatColor.WHITE + mapCache.size());
-        if (lastSuccessfulPollMs > 0L) {
-            long ageS = Math.max(0L, (System.currentTimeMillis() - lastSuccessfulPollMs) / 1000L);
-            sender.sendMessage(ChatColor.GRAY + "last successful poll: " + ChatColor.WHITE + ageS + "s ago");
-        } else {
-            sender.sendMessage(ChatColor.GRAY + "last successful poll: " + ChatColor.RED + "never");
-        }
-        if (lastPollFailure != null && !lastPollFailure.isEmpty()) {
-            sender.sendMessage(ChatColor.GRAY + "last poll failure: " + ChatColor.RED + lastPollFailure);
-        } else {
-            sender.sendMessage(ChatColor.GRAY + "last poll failure: " + ChatColor.GREEN + "none");
-        }
-        if (isAccessBlocked()) {
-            sender.sendMessage(ChatColor.GRAY + "access: " + ChatColor.RED + "blocked");
-            sender.sendMessage(ChatColor.GRAY + "contact: " + ChatColor.WHITE + ACCESS_DISCORD);
-            if (accessBlockReason != null && !accessBlockReason.isEmpty()) {
-                sender.sendMessage(ChatColor.GRAY + "access reason: " + ChatColor.RED + accessBlockReason);
-            }
-        } else {
-            sender.sendMessage(ChatColor.GRAY + "access: " + ChatColor.GREEN + "ok");
-        }
-        return true;
-    }
-
     private boolean handleReload(CommandSender sender) {
         if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
             sender.sendMessage(ChatColor.RED + "Permission denied");
             return true;
         }
+        for (Map.Entry<String, MapView> e : mapCache.entrySet()) {
+            QuadRenderer r = mapRenderers.get(e.getKey());
+            if (r != null) try { e.getValue().removeRenderer(r); } catch (Exception ignored) { }
+        }
         mapCache.clear();
+        mapRenderers.clear();
         mapCacheTimestamps.clear();
         currentAdIds = Collections.emptyList();
         currentImageBase = "";
@@ -382,134 +300,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return true;
     }
 
-    private boolean handleToggle(CommandSender sender) {
-        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
-            sender.sendMessage(ChatColor.RED + "Permission denied");
-            return true;
-        }
-        adsEnabled = !adsEnabled;
-        getConfig().set("ads-enabled", adsEnabled);
-        saveConfig();
-        if (adsEnabled) {
-            long slot = System.currentTimeMillis() / ROTATION_SLOT_MS;
-            updateAllFrames(currentAdIds, slot);
-            sender.sendMessage(ChatColor.GREEN + "Banner ads enabled.");
-        } else {
-            clearAllFrameItems();
-            sender.sendMessage(ChatColor.YELLOW + "Banner ads disabled.");
-        }
-        return true;
-    }
-
-    private void clearAllFrameItems() {
-        for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
-            UUID[] group = groupFrames.get(anchor);
-            if (group == null) continue;
-            for (UUID uid : group) {
-                if (uid == null) continue;
-                Entity ent = Bukkit.getEntity(uid);
-                if (ent instanceof ItemFrame) ((ItemFrame) ent).setItem(null);
-            }
-        }
-    }
-
-    private boolean handleDashboard(CommandSender sender) {
-        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
-            sender.sendMessage(ChatColor.RED + "Permission denied");
-            return true;
-        }
-        if (!(sender instanceof Player)) { sender.sendMessage("Must be a player."); return true; }
-        openDashboard((Player) sender);
-        return true;
-    }
-
-    private void openDashboard(Player p) {
-        Inventory inv = Bukkit.createInventory(null, 27, DASHBOARD_TITLE);
-
-        ItemStack filler = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
-        ItemMeta fm = filler.getItemMeta();
-        if (fm != null) { fm.setDisplayName(" "); filler.setItemMeta(fm); }
-        for (int i = 0; i < 27; i++) inv.setItem(i, filler);
-
-        boolean ok = !isAccessBlocked() && lastSuccessfulPollMs > 0 && lastPollFailure.isEmpty();
-        List<String> statusLore = new ArrayList<String>();
-        if (isAccessBlocked()) statusLore.add(ChatColor.RED + "access blocked — " + ACCESS_DISCORD);
-        else if (!lastPollFailure.isEmpty()) statusLore.add(ChatColor.RED + lastPollFailure);
-        if (lastSuccessfulPollMs > 0) {
-            long ageS = (System.currentTimeMillis() - lastSuccessfulPollMs) / 1000L;
-            statusLore.add(ChatColor.GRAY + "last poll: " + ageS + "s ago");
-        }
-        inv.setItem(4, dashItem(ok ? Material.EMERALD : Material.REDSTONE,
-                ok ? ChatColor.GREEN + "connected" : ChatColor.RED + "disconnected", statusLore));
-
-        inv.setItem(10, dashItem(Material.PAPER, ChatColor.WHITE + "server-id",
-                Collections.singletonList(ChatColor.GRAY + serverId)));
-
-        inv.setItem(12, dashItem(Material.FILLED_MAP, ChatColor.WHITE + "loaded ads",
-                Collections.singletonList(ChatColor.AQUA + String.valueOf(currentAdIds.size()))));
-
-        inv.setItem(14, dashItem(Material.ITEM_FRAME, ChatColor.WHITE + "tracked ads",
-                Collections.singletonList(ChatColor.AQUA + String.valueOf(groupFrames.size()))));
-
-        List<String> earnLore = new ArrayList<String>();
-        earnLore.add(ChatColor.GRAY + String.format("%.3f credits", currentCredits));
-        earnLore.add(ChatColor.GRAY + String.format("≈ $%.2f estimated", currentCredits / CREDITS_PER_DOLLAR));
-        inv.setItem(16, dashItem(Material.GOLD_INGOT, ChatColor.GOLD + "earnings", earnLore));
-
-        inv.setItem(20, dashItem(Material.REPEATER, ChatColor.YELLOW + "reload",
-                Collections.singletonList(ChatColor.GRAY + "click to clear cache and reload")));
-
-        inv.setItem(22, dashItem(
-                adsEnabled ? Material.LIME_CONCRETE : Material.RED_CONCRETE,
-                adsEnabled ? ChatColor.GREEN + "Ads: ON" : ChatColor.RED + "Ads: OFF",
-                Collections.singletonList(ChatColor.GRAY + "click to toggle")));
-
-        inv.setItem(24, dashItem(Material.BLAZE_ROD, ChatColor.AQUA + "get ad tool",
-                Collections.singletonList(ChatColor.GRAY + "click to receive the ad tool")));
-
-        p.openInventory(inv);
-    }
-
-    private static ItemStack dashItem(Material mat, String name, List<String> lore) {
-        ItemStack item = new ItemStack(mat);
-        ItemMeta meta = item.getItemMeta();
-        if (meta != null) {
-            meta.setDisplayName(name);
-            if (lore != null && !lore.isEmpty()) meta.setLore(lore);
-            item.setItemMeta(meta);
-        }
-        return item;
-    }
-
-    @EventHandler
-    public void onInventoryClick(InventoryClickEvent e) {
-        if (!(e.getWhoClicked() instanceof Player)) return;
-        Player p = (Player) e.getWhoClicked();
-        String title = e.getView().getTitle();
-        if (DASHBOARD_TITLE.equals(title)) {
-            e.setCancelled(true);
-            switch (e.getRawSlot()) {
-                case 10:
-                    p.closeInventory();
-                    TextComponent btn = new TextComponent("[click to copy]");
-                    btn.setColor(net.md_5.bungee.api.ChatColor.AQUA);
-                    btn.setUnderlined(true);
-                    btn.setClickEvent(new ClickEvent(ClickEvent.Action.COPY_TO_CLIPBOARD, serverId));
-                    TextComponent id = new TextComponent("  " + serverId);
-                    id.setColor(net.md_5.bungee.api.ChatColor.WHITE);
-                    p.spigot().sendMessage(btn, id);
-                    break;
-                case 20: p.closeInventory(); handleReload(p);  break;
-                case 22: p.closeInventory(); handleToggle(p); break;
-                case 24: p.closeInventory(); handleGive(p);   break;
-            }
-        }
-    }
-
-    private static double parseDouble(String s) {
-        try { return Double.parseDouble(s); } catch (Exception e) { return 0.0; }
-    }
-
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onToolInteract(PlayerInteractEvent e) {
         ItemStack item = e.getItem();
@@ -518,10 +308,14 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (e.getHand() != EquipmentSlot.HAND) return;
         e.setCancelled(true);
 
-        if (isAccessBlocked()) { sendAccessBlockedMessage(e.getPlayer()); return; }
         Player player = e.getPlayer();
         if (!player.isOp() && !player.hasPermission("amethystads.admin")) {
             player.sendMessage(ChatColor.RED + "Permission denied");
+            return;
+        }
+        if (!connected) {
+            player.sendMessage(ChatColor.YELLOW + "amethystADS is not set up yet.");
+            sendWebsiteLink(player);
             return;
         }
         if (currentAdIds.isEmpty()) {
@@ -576,7 +370,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (!trackedFrames.contains(frame.getUniqueId())) return;
         e.setCancelled(true);
         Player player = e.getPlayer();
-        if (isAccessBlocked()) { sendAccessBlockedMessage(player); return; }
 
         ItemStack held = e.getHand() == EquipmentSlot.OFF_HAND
                 ? player.getInventory().getItemInOffHand()
@@ -626,7 +419,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent e) {
-        if (!adsEnabled) return;
         if (currentAdIds.isEmpty()) return;
         Set<UUID> anchorsToUpdate = new HashSet<UUID>();
         for (Entity ent : e.getChunk().getEntities()) {
@@ -641,206 +433,16 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onPlayerJoin(PlayerJoinEvent e) {
-        Player p = e.getPlayer();
+        final Player p = e.getPlayer();
         if (!p.isOp() && !p.hasPermission("amethystads.admin")) return;
-        if (needsOnboarding) {
-            new BukkitRunnable() {
-                @Override public void run() {
-                    sendOnboardingMessage(p);
-                    needsOnboarding = false;
-                    getConfig().set("onboarded", true);
-                    saveConfig();
-                }
-            }.runTaskLater(this, 20L);
-        }
-        if (updateDownloaded || updateAvailable) {
-            new BukkitRunnable() {
-                @Override public void run() {
-                    if (updateDownloaded) {
-                        p.sendMessage(ChatColor.GREEN + "[amethystADS] v" + availableVersion
-                                + " is downloaded — restart the server to apply the update.");
-                    } else if (updateAvailable) {
-                        p.sendMessage(ChatColor.YELLOW + "[amethystADS] v" + availableVersion
-                                + " update available (current: v" + getDescription().getVersion() + ").");
-                    }
-                }
-            }.runTaskLater(this, 60L);
-        }
-    }
-
-    private void sendOnboardingMessage(Player p) {
-        p.sendMessage(ChatColor.DARK_PURPLE + "" + ChatColor.STRIKETHROUGH + "                                        ");
-        p.sendMessage(ChatColor.LIGHT_PURPLE + "" + ChatColor.BOLD + "  amethystADS installed!");
-        p.sendMessage("");
-        p.sendMessage(ChatColor.GRAY + "  To start earning from ads on your server:");
-        p.sendMessage(ChatColor.AQUA + "  1. " + ChatColor.WHITE + "Run " + ChatColor.YELLOW + "/aa register"
-                + ChatColor.WHITE + " and paste the token in the admin panel");
-        p.sendMessage(ChatColor.AQUA + "  2. " + ChatColor.WHITE + "Join our Discord and contact "
-                + ChatColor.LIGHT_PURPLE + "@jplayz2468" + ChatColor.WHITE + " to get verified");
-        p.sendMessage(ChatColor.AQUA + "  3. " + ChatColor.WHITE + "Once verified, open "
-                + ChatColor.YELLOW + "/aa" + ChatColor.WHITE + " → Earnings to track your balance");
-        p.sendMessage(ChatColor.GRAY + "  Earn credits per ad click — 100 credits = $1.00 (manual payouts)");
-        p.sendMessage("");
-
-        TextComponent discord = new TextComponent("  ▶ Join the amethystADS Discord");
-        discord.setColor(net.md_5.bungee.api.ChatColor.LIGHT_PURPLE);
-        discord.setUnderlined(true);
-        discord.setClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, ACCESS_DISCORD));
-        discord.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                new BaseComponent[]{ new TextComponent(ACCESS_DISCORD) }));
-        p.spigot().sendMessage(discord);
-
-        p.sendMessage("");
-        p.sendMessage(ChatColor.DARK_PURPLE + "" + ChatColor.STRIKETHROUGH + "                                        ");
-    }
-
-    private boolean handleUpdate(CommandSender sender) {
-        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
-            sender.sendMessage(ChatColor.RED + "Permission denied");
-            return true;
-        }
-        String current = getDescription().getVersion();
-        if (updateDownloaded) {
-            sender.sendMessage(ChatColor.GREEN + "[amethystADS] v" + availableVersion
-                    + " is downloaded. Restart the server to apply it.");
-        } else if (updateAvailable) {
-            sender.sendMessage(ChatColor.YELLOW + "[amethystADS] v" + availableVersion
-                    + " is available (current: v" + current + "). Downloading…");
-        } else {
-            sender.sendMessage(ChatColor.AQUA + "[amethystADS] Running v" + current + ". Checking for updates…");
-            new BukkitRunnable() {
-                @Override public void run() { checkForUpdate(); }
-            }.runTaskAsynchronously(this);
-        }
-        return true;
-    }
-
-    private void checkForUpdate() {
-        try {
-            String current = getDescription().getVersion();
-            URL url = new URL(GITHUB_API);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestProperty("User-Agent", "AmethystAds-Updater/" + current);
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(10000);
-            if (conn.getResponseCode() != 200) return;
-            String json = readAllText(conn.getInputStream());
-
-            String tagName = extractJsonField(json, "tag_name");
-            String downloadUrl = extractJsonField(json, "browser_download_url");
-            if (tagName.isEmpty() || downloadUrl.isEmpty()) return;
-
-            String latest = tagName.replaceFirst("^v", "");
-            if (!isNewerVersion(latest, current)) {
-                getLogger().info("amethystADS is up to date (v" + current + ").");
-                return;
-            }
-
-            availableVersion = latest;
-            updateAvailable = true;
-            getLogger().info("amethystADS update available: v" + latest + " (current: v" + current + "). Downloading…");
-            broadcastUpdateAlert(ChatColor.YELLOW + "[amethystADS] Update v" + latest
-                    + " available (current: v" + current + "). Downloading automatically…");
-
-            downloadUpdate(downloadUrl);
-
-            updateDownloaded = true;
-            getLogger().info("amethystADS v" + latest + " downloaded. Restart the server to apply.");
-            broadcastUpdateAlert(ChatColor.GREEN + "[amethystADS] v" + latest
-                    + " downloaded. Please restart the server to apply the update.");
-
-        } catch (Exception e) {
-            getLogger().warning("amethystADS update check failed: " + e.getMessage());
-        }
-    }
-
-    private void downloadUpdate(String downloadUrl) throws Exception {
-        File pluginDir = getFile().getParentFile();
-        File updateFile = new File(pluginDir, getFile().getName() + ".update");
-        // Follow redirects manually — GitHub release assets redirect to S3
-        String urlStr = downloadUrl;
-        for (int i = 0; i < 5; i++) {
-            URL url = new URL(urlStr);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setInstanceFollowRedirects(false);
-            conn.setRequestProperty("User-Agent", "AmethystAds-Updater");
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
-            int code = conn.getResponseCode();
-            if (code >= 300 && code < 400) {
-                urlStr = conn.getHeaderField("Location");
-                conn.disconnect();
-                continue;
-            }
-            if (code != 200) throw new RuntimeException("HTTP " + code);
-            InputStream in = conn.getInputStream();
-            FileOutputStream out = new FileOutputStream(updateFile);
-            try {
-                byte[] buf = new byte[8192];
-                int n;
-                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-            } finally {
-                out.close();
-                in.close();
-            }
-            pendingUpdateFile = updateFile;
-            return;
-        }
-        throw new RuntimeException("Too many redirects");
-    }
-
-    private void applyPendingUpdate() {
-        if (pendingUpdateFile == null || !pendingUpdateFile.exists()) return;
-        File target = getFile();
-        boolean deleted = target.delete();
-        if (deleted) {
-            if (pendingUpdateFile.renameTo(target)) {
-                getLogger().info("amethystADS update applied. Ready on next start.");
-            } else {
-                getLogger().warning("amethystADS update: could not rename update file to " + target.getName()
-                        + ". Manually replace the JAR with " + pendingUpdateFile.getName());
-            }
-        } else {
-            getLogger().warning("amethystADS update: could not replace JAR (file locked?). "
-                    + "Manually replace " + target.getName() + " with " + pendingUpdateFile.getName());
-        }
-    }
-
-    private void broadcastUpdateAlert(final String msg) {
-        Bukkit.getScheduler().runTask(this, new Runnable() {
+        new BukkitRunnable() {
             @Override public void run() {
-                for (Player p : Bukkit.getOnlinePlayers()) {
-                    if (p.isOp() || p.hasPermission("amethystads.admin")) p.sendMessage(msg);
+                if (!connected) {
+                    p.sendMessage(ChatColor.YELLOW + "amethystADS is not connected — set up your server on the website:");
+                    sendWebsiteLink(p);
                 }
             }
-        });
-        getLogger().info(ChatColor.stripColor(msg));
-    }
-
-    private static boolean isNewerVersion(String latest, String current) {
-        try {
-            String[] l = latest.replaceFirst("^v", "").split("\\.");
-            String[] c = current.replaceFirst("^v", "").split("\\.");
-            int len = Math.max(l.length, c.length);
-            for (int i = 0; i < len; i++) {
-                int lv = i < l.length ? Integer.parseInt(l[i].replaceAll("[^0-9].*", "")) : 0;
-                int cv = i < c.length ? Integer.parseInt(c[i].replaceAll("[^0-9].*", "")) : 0;
-                if (lv > cv) return true;
-                if (lv < cv) return false;
-            }
-            return false;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private static String extractJsonField(String json, String key) {
-        String search = "\"" + key + "\":\"";
-        int start = json.indexOf(search);
-        if (start < 0) return "";
-        start += search.length();
-        int end = json.indexOf("\"", start);
-        return end < 0 ? "" : json.substring(start, end);
+        }.runTaskLater(this, 60L);
     }
 
     private boolean isAdItem(ItemStack item) {
@@ -851,10 +453,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void sendAdMessage(Player p, UUID frameId) {
-        if (isAccessBlocked()) {
-            sendAccessBlockedMessage(p);
-            return;
-        }
         String adId = frameAdAssignments.get(frameId);
         if (adId == null || adId.isEmpty()) {
             p.sendMessage(ChatColor.GRAY + "no ad configured");
@@ -913,12 +511,9 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             Map<String, String> map = parseForm(body);
             final List<String> adIds = parseAdIds(map.get("adIds"));
             final String imageBase = nz(map.get("imageBase"));
-            final double credits = parseDouble(nz(map.get("credits")));
-            final boolean verified = "1".equals(map.get("verified"));
             final long slot = System.currentTimeMillis() / ROTATION_SLOT_MS;
-            clearAccessBlocked();
-            currentCredits = credits;
-            serverVerified = verified;
+            connected = true;
+            lastPollFailure = "";
 
             if (adIds.isEmpty() || imageBase.isEmpty()) return;
 
@@ -947,37 +542,28 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 @Override public void run() {
                     long updateTime = System.currentTimeMillis();
                     for (Map.Entry<String, BufferedImage> entry : downloaded.entrySet()) {
-                        String adId = entry.getKey();
-                        BufferedImage full = entry.getValue();
-                        for (int q = 0; q < 4; q++) {
-                            mapCache.put(adId + "_" + q, createMapView(full, q));
-                        }
-                        mapCacheTimestamps.put(adId, updateTime);
+                        putAdImage(entry.getKey(), entry.getValue());
+                        mapCacheTimestamps.put(entry.getKey(), updateTime);
                     }
+                    evictStaleAds(adIds);
                     currentAdIds = adIds;
                     currentImageBase = imageBase;
                     renderedRotationSlot = slot;
-                    lastSuccessfulPollMs = System.currentTimeMillis();
-                    lastPollFailure = "";
-                    if (!downloaded.isEmpty())
-                        getLogger().info("amethystADS poll ok: refreshed " + downloaded.size() + " image(s), " + adIds.size() + " ads total");
                     updateAllFrames(adIds, slot);
                 }
             });
         } catch (Exception e) {
             String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            if (isUnauthorizedFailure(msg)) {
-                blockAccess(msg);
-            }
+            connected = false;
             if (!msg.equals(lastPollFailure)) {
                 lastPollFailure = msg;
-                getLogger().warning("amethystADS poll failed for server-id " + serverId + ": " + msg);
+                getLogger().warning("amethystADS not connected (server-id " + serverId
+                        + "): " + msg + " — set this server up at " + WEBSITE_URL);
             }
         }
     }
 
     private void updateAllFrames(List<String> adIds, long slot) {
-        if (!adsEnabled) return;
         if (adIds.isEmpty()) return;
         for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
             updateGroup(anchor, adIds, slot);
@@ -1039,29 +625,45 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return item;
     }
 
-    private MapView createMapView(final BufferedImage fullImage, final int quadrant) {
-        final int srcX = (quadrant == 1 || quadrant == 3) ? QUADRANT_SIZE : 0;
-        final int srcY = (quadrant == 2 || quadrant == 3) ? QUADRANT_SIZE : 0;
-        World world = Bukkit.getWorlds().get(0);
-        MapView view = Bukkit.createMap(world);
-        for (MapRenderer r : new ArrayList<MapRenderer>(view.getRenderers())) {
-            view.removeRenderer(r);
-        }
-        view.addRenderer(new MapRenderer() {
-            boolean drawn = false;
-            @Override public void render(MapView v, MapCanvas canvas, Player player) {
-                if (!drawn) {
-                    canvas.drawImage(0, 0, fullImage.getSubimage(srcX, srcY, QUADRANT_SIZE, QUADRANT_SIZE));
-                    drawn = true;
+    private void evictStaleAds(List<String> activeAdIds) {
+        Set<String> active = new HashSet<String>(activeAdIds);
+        Iterator<String> it = mapCacheTimestamps.keySet().iterator();
+        while (it.hasNext()) {
+            String adId = it.next();
+            if (active.contains(adId)) continue;
+            it.remove();
+            for (int q = 0; q < 4; q++) {
+                String key = adId + "_" + q;
+                MapView view = mapCache.remove(key);
+                QuadRenderer r = mapRenderers.remove(key);
+                if (view != null && r != null) {
+                    try { view.removeRenderer(r); } catch (Exception ignored) { }
                 }
+                if (r != null) r.image = null;
             }
-        });
-        return view;
+        }
+    }
+
+    private void putAdImage(String adId, BufferedImage fullImage) {
+        for (int q = 0; q < 4; q++) {
+            String key = adId + "_" + q;
+            QuadRenderer r = mapRenderers.get(key);
+            if (r == null || mapCache.get(key) == null) {
+                r = new QuadRenderer(q);
+                World world = Bukkit.getWorlds().get(0);
+                MapView view = Bukkit.createMap(world);
+                for (MapRenderer existing : new ArrayList<MapRenderer>(view.getRenderers())) {
+                    view.removeRenderer(existing);
+                }
+                view.addRenderer(r);
+                mapCache.put(key, view);
+                mapRenderers.put(key, r);
+            }
+            r.setImage(fullImage);
+        }
     }
 
     private void scanAttention() {
-        if (!adsEnabled) return;
-        if (isAccessBlocked()) return;
         if (currentAdIds.isEmpty()) return;
         long currentSlot = System.currentTimeMillis() / ROTATION_SLOT_MS;
         for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {
@@ -1120,7 +722,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void flushImpressions() {
-        if (isAccessBlocked()) return;
+        if (!connected) return;
         Map<String, Integer> snapshot;
         synchronized (pendingImpressionCounts) {
             if (pendingImpressionCounts.isEmpty()) return;
@@ -1161,8 +763,14 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 String msg = "";
                 InputStream err = conn.getErrorStream();
                 if (err != null) msg = readAllText(err);
-                if (status == 401) blockAccess("HTTP 401: " + msg);
-                getLogger().warning("impression flush HTTP " + status + ": " + msg);
+                if (status == 401) connected = false;
+                String key = "HTTP " + status + ": " + msg;
+                if (!key.equals(lastImpressionFlushFailure)) {
+                    lastImpressionFlushFailure = key;
+                    getLogger().warning("impression flush " + key);
+                }
+            } else {
+                lastImpressionFlushFailure = "";
             }
         } catch (Exception e) {
             getLogger().fine("impression flush failed: " + e.getMessage());
@@ -1365,42 +973,17 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return hex(b);
     }
 
-    private boolean isAccessBlocked() {
-        return accessBlocked;
-    }
-
-    private void blockAccess(String reason) {
-        accessBlocked = true;
-        accessBlockReason = nz(reason);
-        currentAdIds = Collections.emptyList();
-        currentImageBase = "";
-        synchronized (pendingImpressionCounts) {
-            pendingImpressionCounts.clear();
-        }
-    }
-
-    private void clearAccessBlocked() {
-        accessBlocked = false;
-        accessBlockReason = "";
-    }
-
-    private void sendAccessBlockedMessage(CommandSender sender) {
-        sender.sendMessage(ChatColor.RED + "amethystADS access is blocked.");
+    private void sendWebsiteLink(CommandSender sender) {
         if (sender instanceof Player) {
-            TextComponent link = new TextComponent("Join our Discord to request access.");
-            link.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
+            TextComponent link = new TextComponent("  ▶ Open " + WEBSITE_URL);
+            link.setColor(net.md_5.bungee.api.ChatColor.AQUA);
             link.setUnderlined(true);
-            link.setClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, ACCESS_DISCORD));
+            link.setClickEvent(new ClickEvent(ClickEvent.Action.OPEN_URL, WEBSITE_URL));
             link.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT,
-                    new BaseComponent[]{ new TextComponent(ACCESS_DISCORD) }));
+                    new BaseComponent[]{ new TextComponent(WEBSITE_URL) }));
             ((Player) sender).spigot().sendMessage(link);
         } else {
-            sender.sendMessage(ChatColor.YELLOW + "Join our Discord to request access: " + ACCESS_DISCORD);
+            sender.sendMessage(ChatColor.AQUA + WEBSITE_URL);
         }
-    }
-
-    private static boolean isUnauthorizedFailure(String msg) {
-        String lowered = nz(msg).toLowerCase();
-        return lowered.contains("http 401") || lowered.contains("unauthorized");
     }
 }
