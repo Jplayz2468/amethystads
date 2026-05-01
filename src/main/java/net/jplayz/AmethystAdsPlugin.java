@@ -78,7 +78,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
-    private static final String DEFAULT_API_URL = "https://us-central1-mcads-493820.cloudfunctions.net/edge-node";
+    private static final String DEFAULT_API_URL = "https://api.jplayz.net";
     private static final String GITHUB_API = "https://api.github.com/repos/Jplayz2468/amethystads/releases/latest";
     private static final long UPDATE_CHECK_INTERVAL_TICKS = 6L * 60 * 60 * 20; // every 6 hours
     private static final long UPDATE_ALERT_INTERVAL_TICKS = 30L * 60 * 20;      // every 30 minutes
