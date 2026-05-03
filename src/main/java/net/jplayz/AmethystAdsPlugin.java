@@ -76,7 +76,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     private static final String DEFAULT_API_URL = "https://api.jplayz.net";
-    private static final String WEBSITE_URL = "https://admin.jplayz.net";
+    private static final String WEBSITE_URL = "https://jplayz.net";
     private static final String AD_ITEM_NAME = "amethystads ad tool";
     private static final Material AD_ITEM_MATERIAL = Material.BLAZE_ROD;
     private static final long ROTATION_SLOT_MS = 20_000L;
