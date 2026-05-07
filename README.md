@@ -4,6 +4,10 @@
 
 Bukkit/Spigot plugin that fetches banner ads from the amethystADS edge node and displays them in-game. Servers earn credits per verified player click.
 
+## Account & website
+
+**[jplayz.net](https://jplayz.net) is where server operators create an account.** You sign in with Google, link this plugin to your account using the registration token described below, upload/manage ad creatives, and view your earnings dashboard. The plugin itself is a thin reporter — all account, billing, and ad management happens at jplayz.net.
+
 ## Requirements
 
 - **Java 8+** — not included in this repo; download from [Adoptium](https://adoptium.net/) or any JDK 8+ distribution
@@ -48,14 +52,27 @@ Edit `plugins/amethystads/config.yml` after first run. Key fields:
 | `hmac_secret` | Shared secret used to sign click events sent to the edge node |
 | `edge_node_url` | URL of the amethystADS edge node (default provided) |
 
-Run `/aa register` in-game to generate a registration token. Submit that token through the admin panel to complete server registration and receive your `server_id` and `hmac_secret`.
+Run `/aa register` in-game to generate a registration token. Sign in at **[jplayz.net](https://jplayz.net)** (this is where you create your account) and paste the token into the admin panel to link this server and receive your `server_id` and `hmac_secret`.
+
+## Commands
+
+All commands require the `amethystads.admin` permission (granted to ops by default). The `/aa` alias works everywhere `/amethystads` does.
+
+| Command | Description |
+|---|---|
+| `/aa` | Show whether the plugin is connected and a link to jplayz.net |
+| `/aa register` | Generate a registration token; paste it at [jplayz.net](https://jplayz.net) to link this server to your account |
+| `/aa give` | Give yourself the ad placement tool (a blaze rod) |
+| `/aa reload` | Clear the image cache and re-poll the edge node |
+| `/aa status` | Show connection status, API URL, server-id, active ad count, placed ad-group count, pending impression count, and the most recent flush error (if any) |
 
 ## How It Works
 
-1. The plugin connects to the amethystADS edge node at startup and fetches banner ad data.
-2. Ads are displayed to players in-game (scoreboard, chat, boss bar, or sign, depending on config).
-3. When a player clicks/interacts with an ad, the plugin sends a signed click event to the edge node.
-4. The edge node verifies the event and credits your server account.
+1. The operator creates an account at **[jplayz.net](https://jplayz.net)** and links this plugin instance via `/aa register` + the admin panel.
+2. The plugin connects to the amethystADS edge node at startup and fetches the current banner ad set.
+3. Ads are rendered as 2×2 item-frame maps placed by ops with the ad tool from `/aa give`.
+4. When a player clicks/interacts with an ad, the plugin sends a signed click event to the edge node.
+5. The edge node verifies the event and credits the server's jplayz.net account, where the operator can see earnings and manage ads.
 
 
 
