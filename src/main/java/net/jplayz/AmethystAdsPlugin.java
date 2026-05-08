@@ -183,6 +183,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private static final String[][] SUBCOMMANDS = {
+        {"help",     "list all amethystADS commands"},
         {"register", "get a registration token to link this server at jplayz.net"},
         {"give",     "receive the ad placement tool"},
         {"reload",   "clear image cache and reload ads"},
@@ -196,6 +197,8 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (!command.getName().equalsIgnoreCase("amethystads")) return false;
         String sub = args.length > 0 ? args[0].toLowerCase() : "";
         switch (sub) {
+            case "help":     return handleHelp(sender);
+            case "?":        return handleHelp(sender);
             case "register": return handleRegister(sender);
             case "give":     return handleGive(sender);
             case "reload":   return handleReload(sender);
@@ -322,6 +325,20 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 });
             }
         }.runTaskAsynchronously(this);
+        return true;
+    }
+
+    private boolean handleHelp(CommandSender sender) {
+        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
+            sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
+        }
+        sender.sendMessage(ChatColor.DARK_AQUA + "" + ChatColor.BOLD + "amethystADS commands");
+        for (String[] sc : SUBCOMMANDS) {
+            sender.sendMessage(ChatColor.AQUA + "  /aa " + sc[0]
+                    + ChatColor.GRAY + " — " + sc[1]);
+        }
+        sender.sendMessage(ChatColor.GRAY + "manage your account at " + ChatColor.WHITE + WEBSITE_URL);
         return true;
     }
 
