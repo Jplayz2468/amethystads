@@ -80,11 +80,14 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private static final String AD_ITEM_NAME = "amethystads ad tool";
     private static final Material AD_ITEM_MATERIAL = Material.BLAZE_ROD;
     private static final long ROTATION_SLOT_MS = 20_000L;
-    private static final long CACHE_EXPIRY_MS  = 10 * 60 * 1000L;
     private static final double ATTENTION_DOT = 0.93;
     private static final double ATTENTION_MAX_DIST = 32.0;
     private static final int AD_SIZE = 256;
     private static final int QUADRANT_SIZE = 128;
+    private static final String GITHUB_REPO = "jplayz2468/amethystads";
+    private static final String GITHUB_RELEASES_API =
+            "https://api.github.com/repos/" + GITHUB_REPO + "/releases/latest";
+    private static final long UPDATE_CHECK_PERIOD_TICKS = 30L * 60L * 20L;
 
     private String serverId;
     private String serverSecret;
@@ -97,27 +100,27 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private volatile boolean connected = false;
     private final Map<String, MapView> mapCache = new ConcurrentHashMap<String, MapView>();
     private final Map<String, QuadRenderer> mapRenderers = new ConcurrentHashMap<String, QuadRenderer>();
-    private final Map<String, Long> mapCacheTimestamps = new ConcurrentHashMap<String, Long>();
     private volatile String lastImpressionFlushFailure = "";
+    private volatile String latestReleaseVersion = "";
+    private volatile boolean updateStaged = false;
+    private volatile String lastUpdateCheckFailure = "";
 
     private static final class QuadRenderer extends MapRenderer {
         private final int srcX;
         private final int srcY;
-        private volatile BufferedImage image;
-        private volatile boolean drawn;
+        private volatile BufferedImage pendingImage;
         QuadRenderer(int quadrant) {
             this.srcX = (quadrant == 1 || quadrant == 3) ? QUADRANT_SIZE : 0;
             this.srcY = (quadrant == 2 || quadrant == 3) ? QUADRANT_SIZE : 0;
         }
         void setImage(BufferedImage img) {
-            this.image = img;
-            this.drawn = false;
+            this.pendingImage = img;
         }
         @Override public void render(MapView v, MapCanvas canvas, Player p) {
-            BufferedImage img = image;
-            if (!drawn && img != null) {
+            BufferedImage img = pendingImage;
+            if (img != null) {
                 canvas.drawImage(0, 0, img.getSubimage(srcX, srcY, QUADRANT_SIZE, QUADRANT_SIZE));
-                drawn = true;
+                pendingImage = null;
             }
         }
     }
@@ -163,6 +166,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() { scanAttention(); }
         }.runTaskTimer(this, 100L, 100L);
+
+        new BukkitRunnable() {
+            @Override public void run() { checkForUpdates(); }
+        }.runTaskTimerAsynchronously(this, 100L, UPDATE_CHECK_PERIOD_TICKS);
     }
 
     @Override
@@ -250,6 +257,17 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (!lastImpressionFlushFailure.isEmpty())
             sender.sendMessage(ChatColor.GRAY + "  last impression flush error: "
                     + ChatColor.RED + lastImpressionFlushFailure);
+        sender.sendMessage(ChatColor.GRAY + "  version: " + ChatColor.WHITE
+                + getDescription().getVersion()
+                + (latestReleaseVersion.isEmpty() ? "" :
+                        ChatColor.GRAY + " (latest on github.com/" + GITHUB_REPO + ": "
+                        + ChatColor.WHITE + latestReleaseVersion + ChatColor.GRAY + ")"));
+        if (updateStaged)
+            sender.sendMessage(ChatColor.GOLD + "  update " + ChatColor.WHITE + latestReleaseVersion
+                    + ChatColor.GOLD + " staged in plugins/update/ — restart the server to apply.");
+        if (!lastUpdateCheckFailure.isEmpty())
+            sender.sendMessage(ChatColor.GRAY + "  last update-check error: "
+                    + ChatColor.RED + lastUpdateCheckFailure);
         if (!connected) {
             sender.sendMessage(ChatColor.GRAY + "  manage your account and link this server at "
                     + ChatColor.WHITE + "jplayz.net");
@@ -323,10 +341,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         for (Map.Entry<String, MapView> e : mapCache.entrySet()) {
             QuadRenderer r = mapRenderers.get(e.getKey());
             if (r != null) try { e.getValue().removeRenderer(r); } catch (Exception ignored) { }
+            if (r != null) r.pendingImage = null;
         }
         mapCache.clear();
         mapRenderers.clear();
-        mapCacheTimestamps.clear();
         currentAdIds = Collections.emptyList();
         currentImageBase = "";
         renderedRotationSlot = Long.MIN_VALUE;
@@ -478,6 +496,11 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                     p.sendMessage(ChatColor.YELLOW + "amethystADS is not connected — create an account at jplayz.net and link this server (run /aa register):");
                     sendWebsiteLink(p);
                 }
+                if (updateStaged) {
+                    p.sendMessage(ChatColor.GOLD + "[amethystADS] " + ChatColor.YELLOW
+                            + "update " + ChatColor.WHITE + latestReleaseVersion
+                            + ChatColor.YELLOW + " staged — restart the server to apply.");
+                }
             }
         }.runTaskLater(this, 60L);
     }
@@ -552,36 +575,37 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             connected = true;
             lastPollFailure = "";
 
-            if (adIds.isEmpty() || imageBase.isEmpty()) return;
+            if (adIds.isEmpty() || imageBase.isEmpty()) {
+                if (!adIds.equals(currentAdIds)) {
+                    final List<String> finalAdIds = adIds;
+                    Bukkit.getScheduler().runTask(this, new Runnable() {
+                        @Override public void run() {
+                            evictStaleAds(finalAdIds);
+                            currentAdIds = finalAdIds;
+                        }
+                    });
+                }
+                return;
+            }
 
             List<String> needed = computeNeededAdIds(adIds, slot);
-            long now = System.currentTimeMillis();
-            boolean anyStale = false;
-            for (String adId : needed) {
-                Long ts = mapCacheTimestamps.get(adId);
-                if (!mapCache.containsKey(adId + "_0") || ts == null || now - ts > CACHE_EXPIRY_MS) {
-                    anyStale = true;
-                    break;
-                }
-            }
-            if (adIds.equals(currentAdIds) && imageBase.equals(currentImageBase) && renderedRotationSlot == slot && !anyStale) {
+            if (adIds.equals(currentAdIds) && imageBase.equals(currentImageBase)
+                    && renderedRotationSlot == slot && haveAllRendered(needed)) {
                 return;
             }
 
             final Map<String, BufferedImage> downloaded = new HashMap<String, BufferedImage>();
             for (String adId : needed) {
-                Long ts = mapCacheTimestamps.get(adId);
-                if (mapCache.containsKey(adId + "_0") && ts != null && now - ts <= CACHE_EXPIRY_MS) continue;
+                if (mapCache.containsKey(adId + "_0")) continue;
                 downloaded.put(adId, downloadImage(imageBase + adId));
             }
 
             Bukkit.getScheduler().runTask(this, new Runnable() {
                 @Override public void run() {
-                    long updateTime = System.currentTimeMillis();
                     for (Map.Entry<String, BufferedImage> entry : downloaded.entrySet()) {
                         putAdImage(entry.getKey(), entry.getValue());
-                        mapCacheTimestamps.put(entry.getKey(), updateTime);
                     }
+                    downloaded.clear();
                     evictStaleAds(adIds);
                     currentAdIds = adIds;
                     currentImageBase = imageBase;
@@ -664,11 +688,15 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     private void evictStaleAds(List<String> activeAdIds) {
         Set<String> active = new HashSet<String>(activeAdIds);
-        Iterator<String> it = mapCacheTimestamps.keySet().iterator();
-        while (it.hasNext()) {
-            String adId = it.next();
+        Set<String> seenAdIds = new HashSet<String>();
+        for (String key : new ArrayList<String>(mapCache.keySet())) {
+            int us = key.lastIndexOf('_');
+            if (us < 0) continue;
+            String adId = key.substring(0, us);
             if (active.contains(adId)) continue;
-            it.remove();
+            seenAdIds.add(adId);
+        }
+        for (String adId : seenAdIds) {
             for (int q = 0; q < 4; q++) {
                 String key = adId + "_" + q;
                 MapView view = mapCache.remove(key);
@@ -676,12 +704,20 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 if (view != null && r != null) {
                     try { view.removeRenderer(r); } catch (Exception ignored) { }
                 }
-                if (r != null) r.image = null;
+                if (r != null) r.pendingImage = null;
             }
         }
     }
 
+    private boolean haveAllRendered(List<String> adIds) {
+        for (String adId : adIds) {
+            if (!mapCache.containsKey(adId + "_0")) return false;
+        }
+        return true;
+    }
+
     private void putAdImage(String adId, BufferedImage fullImage) {
+        final List<QuadRenderer> staged = new ArrayList<QuadRenderer>(4);
         for (int q = 0; q < 4; q++) {
             String key = adId + "_" + q;
             QuadRenderer r = mapRenderers.get(key);
@@ -697,7 +733,13 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 mapRenderers.put(key, r);
             }
             r.setImage(fullImage);
+            staged.add(r);
         }
+        new BukkitRunnable() {
+            @Override public void run() {
+                for (QuadRenderer r : staged) r.pendingImage = null;
+            }
+        }.runTaskLater(this, 40L);
     }
 
     private void scanAttention() {
@@ -1008,6 +1050,162 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         byte[] b = new byte[bytes];
         rng.nextBytes(b);
         return hex(b);
+    }
+
+    private void checkForUpdates() {
+        String currentVersion = getDescription().getVersion();
+        try {
+            URL url = new URL(GITHUB_RELEASES_API);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(8000);
+            conn.setReadTimeout(15000);
+            conn.setRequestProperty("Accept", "application/vnd.github+json");
+            conn.setRequestProperty("User-Agent", "amethystads-plugin/" + currentVersion);
+            int status = conn.getResponseCode();
+            if (status != 200) {
+                lastUpdateCheckFailure = "HTTP " + status;
+                return;
+            }
+            String body = readAllText(conn.getInputStream());
+            String tag = extractJsonString(body, "tag_name");
+            if (tag == null) { lastUpdateCheckFailure = "no tag_name"; return; }
+            String latest = tag.startsWith("v") ? tag.substring(1) : tag;
+            latestReleaseVersion = latest;
+            lastUpdateCheckFailure = "";
+            if (!isNewerVersion(latest, currentVersion)) return;
+            if (updateStaged) { notifyAdminsOfUpdate(currentVersion, latest); return; }
+            String assetUrl = findFirstJarAssetUrl(body);
+            if (assetUrl == null) { lastUpdateCheckFailure = "no .jar asset"; return; }
+            File updateDir = new File(getDataFolder().getParentFile(), "update");
+            if (!updateDir.exists() && !updateDir.mkdirs()) {
+                lastUpdateCheckFailure = "cannot create plugins/update";
+                return;
+            }
+            File target = new File(updateDir, getFile().getName());
+            File tmp = new File(updateDir, getFile().getName() + ".part");
+            downloadJarTo(assetUrl, tmp);
+            if (target.exists() && !target.delete()) {
+                lastUpdateCheckFailure = "cannot replace staged jar";
+                return;
+            }
+            if (!tmp.renameTo(target)) {
+                lastUpdateCheckFailure = "cannot rename staged jar";
+                return;
+            }
+            updateStaged = true;
+            getLogger().info("amethystADS update " + latest + " staged at "
+                    + target.getAbsolutePath() + " — restart server to apply");
+            notifyAdminsOfUpdate(currentVersion, latest);
+        } catch (Exception e) {
+            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            lastUpdateCheckFailure = msg;
+            getLogger().fine("update check failed: " + msg);
+        }
+    }
+
+    private void downloadJarTo(String assetUrl, File dest) throws Exception {
+        URL u = new URL(assetUrl);
+        HttpURLConnection conn = (HttpURLConnection) u.openConnection();
+        conn.setInstanceFollowRedirects(true);
+        conn.setConnectTimeout(15000);
+        conn.setReadTimeout(60000);
+        conn.setRequestProperty("Accept", "application/octet-stream");
+        conn.setRequestProperty("User-Agent", "amethystads-plugin");
+        int status = conn.getResponseCode();
+        if (status != 200) throw new RuntimeException("HTTP " + status + " downloading update");
+        InputStream in = conn.getInputStream();
+        java.io.FileOutputStream out = new java.io.FileOutputStream(dest);
+        try {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        } finally {
+            try { in.close(); } catch (Exception ignored) { }
+            try { out.close(); } catch (Exception ignored) { }
+        }
+    }
+
+    private void notifyAdminsOfUpdate(final String current, final String latest) {
+        Bukkit.getScheduler().runTask(this, new Runnable() {
+            @Override public void run() {
+                String msg = ChatColor.GOLD + "[amethystADS] " + ChatColor.YELLOW
+                        + "update " + ChatColor.WHITE + latest + ChatColor.YELLOW
+                        + " staged (currently " + ChatColor.WHITE + current + ChatColor.YELLOW
+                        + ") — restart the server to apply.";
+                for (Player p : Bukkit.getOnlinePlayers()) {
+                    if (p.isOp() || p.hasPermission("amethystads.admin")) p.sendMessage(msg);
+                }
+            }
+        });
+    }
+
+    private static String extractJsonString(String json, String key) {
+        String pat = "\"" + key + "\"";
+        int idx = json.indexOf(pat);
+        if (idx < 0) return null;
+        int colon = json.indexOf(':', idx + pat.length());
+        if (colon < 0) return null;
+        int q1 = json.indexOf('"', colon + 1);
+        if (q1 < 0) return null;
+        StringBuilder sb = new StringBuilder();
+        int i = q1 + 1;
+        while (i < json.length()) {
+            char c = json.charAt(i);
+            if (c == '\\' && i + 1 < json.length()) {
+                char n = json.charAt(i + 1);
+                switch (n) {
+                    case '"': sb.append('"'); break;
+                    case '\\': sb.append('\\'); break;
+                    case '/': sb.append('/'); break;
+                    case 'n': sb.append('\n'); break;
+                    case 't': sb.append('\t'); break;
+                    case 'r': sb.append('\r'); break;
+                    default: sb.append(n);
+                }
+                i += 2;
+            } else if (c == '"') {
+                return sb.toString();
+            } else {
+                sb.append(c);
+                i++;
+            }
+        }
+        return null;
+    }
+
+    private static String findFirstJarAssetUrl(String json) {
+        int from = 0;
+        while (true) {
+            int idx = json.indexOf("\"browser_download_url\"", from);
+            if (idx < 0) return null;
+            int colon = json.indexOf(':', idx);
+            if (colon < 0) return null;
+            int q1 = json.indexOf('"', colon + 1);
+            int q2 = q1 < 0 ? -1 : json.indexOf('"', q1 + 1);
+            if (q1 < 0 || q2 < 0) return null;
+            String u = json.substring(q1 + 1, q2);
+            if (u.toLowerCase().endsWith(".jar")) return u;
+            from = q2 + 1;
+        }
+    }
+
+    private static boolean isNewerVersion(String a, String b) {
+        String[] sa = a.split("\\.");
+        String[] sb = b.split("\\.");
+        int n = Math.max(sa.length, sb.length);
+        for (int i = 0; i < n; i++) {
+            String pa = i < sa.length ? sa[i] : "0";
+            String pb = i < sb.length ? sb[i] : "0";
+            try {
+                int ia = Integer.parseInt(pa.replaceAll("[^0-9].*", ""));
+                int ib = Integer.parseInt(pb.replaceAll("[^0-9].*", ""));
+                if (ia != ib) return ia > ib;
+            } catch (NumberFormatException ex) {
+                int cmp = pa.compareTo(pb);
+                if (cmp != 0) return cmp > 0;
+            }
+        }
+        return false;
     }
 
     private void sendWebsiteLink(CommandSender sender) {

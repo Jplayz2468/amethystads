@@ -74,6 +74,14 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 4. When a player clicks/interacts with an ad, the plugin sends a signed click event to the edge node.
 5. The edge node verifies the event and credits the server's jplayz.net account, where the operator can see earnings and manage ads.
 
+## Auto-updates
+
+On startup and every 30 minutes, the plugin compares its own version against the latest release published at [github.com/jplayz2468/amethystads/releases](https://github.com/jplayz2468/amethystads/releases). If a newer release is available, it downloads the release's `.jar` asset into `plugins/update/` (Bukkit's standard update folder, which replaces the live jar on the next server start) and notifies any online admins in chat. Admins are also notified on join while an update is staged. Restart the server to apply the staged jar.
+
+## Memory & ad fetching
+
+Ad images are fetched from the edge node only when an ad in the current rotation is about to be displayed, drawn once onto the in-game map canvas, and then released — the plugin does not retain `BufferedImage`s in its own caches. When an ad rotates out of the active set its `MapView` and renderer are discarded.
+
 
 
 NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.
