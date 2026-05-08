@@ -108,19 +108,21 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private static final class QuadRenderer extends MapRenderer {
         private final int srcX;
         private final int srcY;
-        private volatile BufferedImage pendingImage;
+        private volatile BufferedImage image;
+        private volatile boolean drawn;
         QuadRenderer(int quadrant) {
             this.srcX = (quadrant == 1 || quadrant == 3) ? QUADRANT_SIZE : 0;
             this.srcY = (quadrant == 2 || quadrant == 3) ? QUADRANT_SIZE : 0;
         }
         void setImage(BufferedImage img) {
-            this.pendingImage = img;
+            this.image = img;
+            this.drawn = false;
         }
         @Override public void render(MapView v, MapCanvas canvas, Player p) {
-            BufferedImage img = pendingImage;
-            if (img != null) {
+            BufferedImage img = image;
+            if (!drawn && img != null) {
                 canvas.drawImage(0, 0, img.getSubimage(srcX, srcY, QUADRANT_SIZE, QUADRANT_SIZE));
-                pendingImage = null;
+                drawn = true;
             }
         }
     }
@@ -183,6 +185,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         {"give",     "receive the ad placement tool"},
         {"reload",   "clear image cache and reload ads"},
         {"status",   "show connection status and current ad info"},
+        {"update",   "check github.com/" + GITHUB_REPO + " for a new release now"},
     };
 
     @Override
@@ -194,6 +197,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             case "give":     return handleGive(sender);
             case "reload":   return handleReload(sender);
             case "status":   return handleStatus(sender);
+            case "update":   return handleUpdate(sender);
             default:         return handleDefault(sender);
         }
     }
@@ -276,6 +280,44 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         return true;
     }
 
+    private boolean handleUpdate(final CommandSender sender) {
+        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
+            sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
+        }
+        final String currentVersion = getDescription().getVersion();
+        sender.sendMessage(ChatColor.YELLOW + "amethystADS: checking github.com/" + GITHUB_REPO + " for a newer release...");
+        new BukkitRunnable() {
+            @Override public void run() {
+                final boolean wasStaged = updateStaged;
+                final String prevLatest = latestReleaseVersion;
+                checkForUpdates();
+                Bukkit.getScheduler().runTask(AmethystAdsPlugin.this, new Runnable() {
+                    @Override public void run() {
+                        if (!lastUpdateCheckFailure.isEmpty()) {
+                            sender.sendMessage(ChatColor.RED + "  update check failed: " + lastUpdateCheckFailure);
+                            return;
+                        }
+                        if (updateStaged && (!wasStaged || !latestReleaseVersion.equals(prevLatest))) {
+                            sender.sendMessage(ChatColor.GREEN + "  update " + ChatColor.WHITE + latestReleaseVersion
+                                    + ChatColor.GREEN + " downloaded to plugins/update/ — restart the server to apply.");
+                        } else if (updateStaged) {
+                            sender.sendMessage(ChatColor.YELLOW + "  update " + ChatColor.WHITE + latestReleaseVersion
+                                    + ChatColor.YELLOW + " is already staged — restart the server to apply.");
+                        } else {
+                            sender.sendMessage(ChatColor.GREEN + "  up to date (current "
+                                    + ChatColor.WHITE + currentVersion + ChatColor.GREEN
+                                    + (latestReleaseVersion.isEmpty() ? "" :
+                                            ", latest " + ChatColor.WHITE + latestReleaseVersion + ChatColor.GREEN)
+                                    + ").");
+                        }
+                    }
+                });
+            }
+        }.runTaskAsynchronously(this);
+        return true;
+    }
+
     private boolean handleRegister(CommandSender sender) {
         if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
             sender.sendMessage(ChatColor.RED + "Permission denied");
@@ -341,7 +383,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         for (Map.Entry<String, MapView> e : mapCache.entrySet()) {
             QuadRenderer r = mapRenderers.get(e.getKey());
             if (r != null) try { e.getValue().removeRenderer(r); } catch (Exception ignored) { }
-            if (r != null) r.pendingImage = null;
+            if (r != null) r.image = null;
         }
         mapCache.clear();
         mapRenderers.clear();
@@ -704,7 +746,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 if (view != null && r != null) {
                     try { view.removeRenderer(r); } catch (Exception ignored) { }
                 }
-                if (r != null) r.pendingImage = null;
+                if (r != null) r.image = null;
             }
         }
     }
@@ -717,7 +759,6 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void putAdImage(String adId, BufferedImage fullImage) {
-        final List<QuadRenderer> staged = new ArrayList<QuadRenderer>(4);
         for (int q = 0; q < 4; q++) {
             String key = adId + "_" + q;
             QuadRenderer r = mapRenderers.get(key);
@@ -733,13 +774,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                 mapRenderers.put(key, r);
             }
             r.setImage(fullImage);
-            staged.add(r);
         }
-        new BukkitRunnable() {
-            @Override public void run() {
-                for (QuadRenderer r : staged) r.pendingImage = null;
-            }
-        }.runTaskLater(this, 40L);
     }
 
     private void scanAttention() {

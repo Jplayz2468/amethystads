@@ -65,6 +65,7 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 | `/aa give` | Give yourself the ad placement tool (a blaze rod) |
 | `/aa reload` | Clear the image cache and re-poll the edge node |
 | `/aa status` | Show connection status, API URL, server-id, active ad count, placed ad-group count, pending impression count, and the most recent flush error (if any) |
+| `/aa update` | Check [github.com/jplayz2468/amethystads](https://github.com/jplayz2468/amethystads) for a newer release immediately and stage it to `plugins/update/` if found |
 
 ## How It Works
 
@@ -80,7 +81,7 @@ On startup and every 30 minutes, the plugin compares its own version against the
 
 ## Memory & ad fetching
 
-Ad images are fetched from the edge node only when an ad in the current rotation is about to be displayed, drawn once onto the in-game map canvas, and then released — the plugin does not retain `BufferedImage`s in its own caches. When an ad rotates out of the active set its `MapView` and renderer are discarded.
+Ad images are fetched from the edge node only when an ad first enters the current rotation, and only the ads actually in the current rotation are downloaded — there is no proactive pre-fetch and no time-based image cache. While an ad is in the active rotation its 256×256 `BufferedImage` is held in memory so Minecraft can populate per-player map canvases reliably (releasing it earlier causes blank-map textures to appear when a player approaches an ad after the first render). When an ad rotates out of the active set its `MapView`, renderer, and image reference are all discarded.
 
 
 
