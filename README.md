@@ -44,15 +44,15 @@ Output: `build/libs/amethystads-plugin.jar`
 
 ## Configuration
 
-Edit `plugins/amethystads/config.yml` after first run. Key fields:
+`plugins/amethystads/config.yml` is generated on first run and populated with sensible defaults. You normally don't need to edit it.
 
 | Field | Description |
 |---|---|
-| `server_id` | Unique identifier for your server, assigned during registration |
-| `hmac_secret` | Shared secret used to sign click events sent to the edge node |
-| `edge_node_url` | URL of the amethystADS edge node (default provided) |
+| `server-id` | Unique identifier for this server. Auto-generated as a random UUID on first run. |
+| `server-secret` | Shared secret used to HMAC-sign click and impression events. Auto-generated as 32 bytes of random hex on first run. |
+| `api-url` | URL of the amethystADS API. Defaults to `https://api.jplayz.net`. |
 
-Run `/aa register` in-game to generate a registration token. Sign in at **[jplayz.net](https://jplayz.net)** (this is where you create your account) and paste the token into the admin panel to link this server and receive your `server_id` and `hmac_secret`.
+To link this server to your jplayz.net account, run `/aa register` in-game to generate a registration token, then sign in at **[jplayz.net](https://jplayz.net)** and paste the token into the publisher dashboard. The token embeds the `server-id` and `server-secret` already in the config, so no manual copying is needed.
 
 ## Commands
 
@@ -61,7 +61,7 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 | Command | Description |
 |---|---|
 | `/aa` | Show whether the plugin is connected and a link to jplayz.net |
-| `/aa register` | Generate a registration token; paste it at [jplayz.net](https://jplayz.net) to link this server to your account |
+| `/aa register` | Generate a registration token; paste it at [jplayz.net](https://jplayz.net) to link this server to your account (click the chat link to copy) |
 | `/aa give` | Give yourself the ad placement tool (a blaze rod) |
 | `/aa reload` | Clear the image cache and re-poll the edge node |
 | `/aa status` | Show connection status, API URL, server-id, active ad count, placed ad-group count, pending impression count, and the most recent flush error (if any) |
@@ -69,11 +69,11 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 
 ## How It Works
 
-1. The operator creates an account at **[jplayz.net](https://jplayz.net)** and links this plugin instance via `/aa register` + the admin panel.
-2. The plugin connects to the amethystADS edge node at startup and fetches the current banner ad set.
+1. The operator creates an account at **[jplayz.net](https://jplayz.net)** and links this plugin instance via `/aa register` + the publisher dashboard.
+2. The plugin polls the amethystADS API at startup (and every 5 seconds thereafter) and fetches the current banner ad set.
 3. Ads are rendered as 2×2 item-frame maps placed by ops with the ad tool from `/aa give`.
-4. When a player clicks/interacts with an ad, the plugin sends a signed click event to the edge node.
-5. The edge node verifies the event and credits the server's jplayz.net account, where the operator can see earnings and manage ads.
+4. Per-player impressions are batched and flushed every 30 seconds; clicks/interactions are sent immediately. All events are HMAC-signed with the server's secret.
+5. The API verifies the signature, runs click-fraud checks, and credits the server's jplayz.net account where the operator can see earnings and manage ads.
 
 ## Auto-updates
 
