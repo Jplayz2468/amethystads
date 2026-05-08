@@ -98,6 +98,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private volatile long renderedRotationSlot = Long.MIN_VALUE;
     private volatile String lastPollFailure = "";
     private volatile boolean connected = false;
+    private volatile boolean adsHidden = false;
     private final Map<String, MapView> mapCache = new ConcurrentHashMap<String, MapView>();
     private final Map<String, QuadRenderer> mapRenderers = new ConcurrentHashMap<String, QuadRenderer>();
     private volatile String lastImpressionFlushFailure = "";
@@ -151,6 +152,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         }
         apiUrl = cfg.getString("api-url", "");
         if (apiUrl == null || apiUrl.isEmpty()) apiUrl = DEFAULT_API_URL;
+        adsHidden = cfg.getBoolean("ads-hidden", false);
         saveConfig();
 
         getLogger().info("amethystADS server-id " + serverId);
@@ -185,6 +187,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         {"give",     "receive the ad placement tool"},
         {"reload",   "clear image cache and reload ads"},
         {"status",   "show connection status and current ad info"},
+        {"toggle",   "hide/show all ads on this server (hidden = no earnings)"},
         {"update",   "check github.com/" + GITHUB_REPO + " for a new release now"},
     };
 
@@ -197,6 +200,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             case "give":     return handleGive(sender);
             case "reload":   return handleReload(sender);
             case "status":   return handleStatus(sender);
+            case "toggle":   return handleToggle(sender);
             case "update":   return handleUpdate(sender);
             default:         return handleDefault(sender);
         }
@@ -250,6 +254,9 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(ChatColor.GRAY + "  last error: " + ChatColor.RED + lastPollFailure);
         sender.sendMessage(ChatColor.GRAY + "  api: " + ChatColor.WHITE + apiUrl);
         sender.sendMessage(ChatColor.GRAY + "  server-id: " + ChatColor.WHITE + serverId);
+        sender.sendMessage(ChatColor.GRAY + "  ads visible: " + (adsHidden
+                ? ChatColor.RED + "hidden (no earnings)"
+                : ChatColor.GREEN + "shown"));
         sender.sendMessage(ChatColor.GRAY + "  active ads: " + ChatColor.WHITE + currentAdIds.size());
         sender.sendMessage(ChatColor.GRAY + "  placed ad groups: " + ChatColor.WHITE + groupFrames.size());
         int pending;
@@ -316,6 +323,46 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             }
         }.runTaskAsynchronously(this);
         return true;
+    }
+
+    private boolean handleToggle(CommandSender sender) {
+        if (!sender.isOp() && !sender.hasPermission("amethystads.admin")) {
+            sender.sendMessage(ChatColor.RED + "Permission denied");
+            return true;
+        }
+        adsHidden = !adsHidden;
+        getConfig().set("ads-hidden", adsHidden);
+        saveConfig();
+        if (adsHidden) {
+            clearAllPlacedFrames();
+            sender.sendMessage(ChatColor.YELLOW + "amethystADS ads are now " + ChatColor.RED + "HIDDEN"
+                    + ChatColor.YELLOW + ".");
+            sender.sendMessage(ChatColor.GOLD + "  warning: " + ChatColor.GRAY
+                    + "while hidden, this server will " + ChatColor.RED + "not earn any money"
+                    + ChatColor.GRAY + " — no impressions or clicks are reported.");
+            sender.sendMessage(ChatColor.GRAY + "  run " + ChatColor.WHITE + "/aa toggle"
+                    + ChatColor.GRAY + " again to restore ads.");
+        } else {
+            long slot = System.currentTimeMillis() / ROTATION_SLOT_MS;
+            updateAllFrames(currentAdIds, slot);
+            sender.sendMessage(ChatColor.GREEN + "amethystADS ads are now SHOWN.");
+            if (currentAdIds.isEmpty()) {
+                sender.sendMessage(ChatColor.GRAY + "  no ads loaded yet — they will appear after the next poll.");
+            }
+        }
+        return true;
+    }
+
+    private void clearAllPlacedFrames() {
+        for (UUID[] group : groupFrames.values()) {
+            if (group == null) continue;
+            for (UUID uid : group) {
+                if (uid == null) continue;
+                Entity ent = Bukkit.getEntity(uid);
+                if (ent instanceof ItemFrame) ((ItemFrame) ent).setItem(null);
+                frameAdAssignments.remove(uid);
+            }
+        }
     }
 
     private boolean handleRegister(CommandSender sender) {
@@ -555,6 +602,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void sendAdMessage(Player p, UUID frameId) {
+        if (adsHidden) return;
         String adId = frameAdAssignments.get(frameId);
         if (adId == null || adId.isEmpty()) {
             p.sendMessage(ChatColor.GRAY + "no ad configured");
@@ -676,6 +724,15 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private void updateGroup(UUID anchor, List<String> adIds, long slot) {
         UUID[] group = groupFrames.get(anchor);
         if (group == null) return;
+        if (adsHidden) {
+            for (UUID uid : group) {
+                if (uid == null) continue;
+                Entity ent = Bukkit.getEntity(uid);
+                if (ent instanceof ItemFrame) ((ItemFrame) ent).setItem(null);
+                frameAdAssignments.remove(uid);
+            }
+            return;
+        }
         String adId = selectAdForFrame(anchor, adIds, slot);
         for (int q = 0; q < 4; q++) {
             if (group[q] == null) continue;
@@ -778,6 +835,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     }
 
     private void scanAttention() {
+        if (adsHidden) return;
         if (currentAdIds.isEmpty()) return;
         long currentSlot = System.currentTimeMillis() / ROTATION_SLOT_MS;
         for (UUID anchor : new ArrayList<UUID>(groupFrames.keySet())) {

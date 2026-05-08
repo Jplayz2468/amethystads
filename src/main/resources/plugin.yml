@@ -7,7 +7,7 @@ author: amethystads
 commands:
   amethystads:
     description: amethystADS admin commands
-    usage: /amethystads <register|give|reload|status|update>
+    usage: /amethystads <register|give|reload|status|toggle|update>
     permission: amethystads.admin
     aliases: [aa]
 permissions:

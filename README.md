@@ -65,6 +65,7 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 | `/aa give` | Give yourself the ad placement tool (a blaze rod) |
 | `/aa reload` | Clear the image cache and re-poll the edge node |
 | `/aa status` | Show connection status, API URL, server-id, active ad count, placed ad-group count, pending impression count, and the most recent flush error (if any) |
+| `/aa toggle` | Hide or show all placed ads on this server. **While hidden, the server earns no money** — no impressions or clicks are reported. Frames stay placed and reappear on toggle-on. Persists across restarts. |
 | `/aa update` | Check [github.com/jplayz2468/amethystads](https://github.com/jplayz2468/amethystads) for a newer release immediately and stage it to `plugins/update/` if found |
 
 ## How It Works
