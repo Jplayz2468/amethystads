@@ -1,5 +1,6 @@
 package net.jplayz;
 
+import net.jplayz.metrics.MetricsTracker;
 import net.md_5.bungee.api.chat.BaseComponent;
 import net.md_5.bungee.api.chat.ClickEvent;
 import net.md_5.bungee.api.chat.HoverEvent;
@@ -134,6 +135,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
     private final Map<UUID, UUID[]> groupFrames = new ConcurrentHashMap<UUID, UUID[]>();
     private final Map<String, Long> slotByPlayerAd = new ConcurrentHashMap<String, Long>();
     private final Map<String, Integer> pendingImpressionCounts = new ConcurrentHashMap<String, Integer>();
+    private MetricsTracker metrics;
 
     @Override
     public void onEnable() {
@@ -174,13 +176,34 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() { checkForUpdates(); }
         }.runTaskTimerAsynchronously(this, 100L, UPDATE_CHECK_PERIOD_TICKS);
+
+        try {
+            metrics = new MetricsTracker(this);
+            metrics.start();
+        } catch (Throwable t) {
+            getLogger().warning("metrics disabled: " + t.getMessage());
+            metrics = null;
+        }
     }
 
     @Override
     public void onDisable() {
         savePersistentFrames();
         flushImpressions();
+        if (metrics != null) {
+            try { metrics.shutdown(); } catch (Throwable ignored) {}
+        }
     }
+
+    // ---------- accessors used by net.jplayz.metrics.MetricsTracker ----------
+
+    public Map<UUID, UUID[]> getGroupFrames() { return groupFrames; }
+    public String getFrameAdAssignment(UUID frameUuid) { return frameAdAssignments.get(frameUuid); }
+    public String getServerId() { return serverId; }
+    public String getServerSecret() { return serverSecret; }
+    public String getApiUrl() { return apiUrl; }
+    public boolean isAdsHidden() { return adsHidden; }
+    public boolean isConnected() { return connected; }
 
     private static final String[][] SUBCOMMANDS = {
         {"help",     "list all amethystADS commands"},
@@ -560,6 +583,10 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             return;
         }
         sendAdMessage(player, frame.getUniqueId());
+        if (metrics != null) {
+            try { metrics.onServerClick(frameAdAssignments.get(frame.getUniqueId())); }
+            catch (Throwable ignored) {}
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
