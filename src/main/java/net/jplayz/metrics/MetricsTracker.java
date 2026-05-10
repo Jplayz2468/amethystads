@@ -156,11 +156,32 @@ public final class MetricsTracker implements Listener {
     }
 
     /** Called by the plugin when a player right-clicks (or attacks) a banner frame. */
-    public void onServerClick(String adId) {
+    public void onServerClick(Player player, UUID anchor, String adId) {
         if (!enabled || adId == null || adId.isEmpty()) return;
         int id = parseInt(adId);
         if (id <= 0) return;
-        bucket(currentDate()).counters(id).serverClicks.increment();
+        AdCounters counters = bucket(currentDate()).counters(id);
+        counters.serverClicks.increment();
+
+        // A click is proof the banner was seen. If the gaze-based impression
+        // hasn't fired yet for this (player, banner), credit one now so a fast
+        // click never out-races the 1s threshold.
+        if (player == null || anchor == null) return;
+        long key = (((long) player.getEntityId()) << 32) ^ anchor.getLeastSignificantBits();
+        long nowMs = System.currentTimeMillis();
+        LookState ls = lookStates.get(key);
+        if (ls == null) {
+            ls = new LookState();
+            ls.startMs = nowMs;
+            ls.lastSeenMs = nowMs;
+            ls.recorded = true;
+            lookStates.put(key, ls);
+            counters.impressions.increment();
+        } else if (!ls.recorded) {
+            ls.recorded = true;
+            ls.lastSeenMs = nowMs;
+            counters.impressions.increment();
+        }
     }
 
     // ---------- visibility scan ----------

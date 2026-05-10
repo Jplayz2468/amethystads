@@ -584,7 +584,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         }
         sendAdMessage(player, frame.getUniqueId());
         if (metrics != null) {
-            try { metrics.onServerClick(frameAdAssignments.get(frame.getUniqueId())); }
+            try { metrics.onServerClick(player, frameAnchor.get(frame.getUniqueId()), frameAdAssignments.get(frame.getUniqueId())); }
             catch (Throwable ignored) {}
         }
     }
