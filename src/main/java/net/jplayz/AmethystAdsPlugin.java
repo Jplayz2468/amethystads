@@ -76,8 +76,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
-    private static final String DEFAULT_API_URL = "https://api.jplayz.net";
-    private static final String WEBSITE_URL = "https://jplayz.net";
+    private static final String DEFAULT_API_URL = "https://api.amethystads.com";
+    private static final String WEBSITE_URL = "https://amethystads.com";
     private static final String AD_ITEM_NAME = "amethystads ad tool";
     private static final Material AD_ITEM_MATERIAL = Material.BLAZE_ROD;
     private static final long ROTATION_SLOT_MS = 20_000L;
@@ -207,7 +207,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
 
     private static final String[][] SUBCOMMANDS = {
         {"help",     "list all amethystADS commands"},
-        {"register", "get a registration token to link this server at jplayz.net"},
+        {"register", "get a registration token to link this server at amethystads.com"},
         {"give",     "receive the ad placement tool"},
         {"reload",   "clear image cache and reload ads"},
         {"status",   "show connection status and current ad info"},
@@ -254,12 +254,12 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         if (connected) {
             sender.sendMessage(ChatColor.GREEN + "amethystADS connected. " + ChatColor.GRAY
                     + "Use " + ChatColor.WHITE + "/aa give" + ChatColor.GRAY
-                    + " for the ad tool, or sign in at jplayz.net to manage your account and view earnings.");
+                    + " for the ad tool, or sign in at amethystads.com to manage your account and view earnings.");
         } else {
             sender.sendMessage(ChatColor.YELLOW + "amethystADS is not connected yet.");
             if (!lastPollFailure.isEmpty())
                 sender.sendMessage(ChatColor.GRAY + "  reason: " + ChatColor.RED + lastPollFailure);
-            sender.sendMessage(ChatColor.GRAY + "  create an account at " + ChatColor.WHITE + "jplayz.net"
+            sender.sendMessage(ChatColor.GRAY + "  create an account at " + ChatColor.WHITE + "amethystads.com"
                     + ChatColor.GRAY + ", then run " + ChatColor.WHITE + "/aa register"
                     + ChatColor.GRAY + " and paste the token on the site to link this server.");
         }
@@ -307,7 +307,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
                     + ChatColor.RED + lastUpdateCheckFailure);
         if (!connected) {
             sender.sendMessage(ChatColor.GRAY + "  manage your account and link this server at "
-                    + ChatColor.WHITE + "jplayz.net");
+                    + ChatColor.WHITE + "amethystads.com");
             sendWebsiteLink(sender);
         }
         return true;
@@ -412,7 +412,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         }
         String token = buildRegistrationToken();
         sender.sendMessage(ChatColor.YELLOW + "amethystADS registration token "
-                + ChatColor.GRAY + "(create an account at " + ChatColor.WHITE + "jplayz.net"
+                + ChatColor.GRAY + "(create an account at " + ChatColor.WHITE + "amethystads.com"
                 + ChatColor.GRAY + " and paste this token there to link this server):");
         if (sender instanceof Player) {
             TextComponent button = new TextComponent("[click to copy]");
@@ -443,7 +443,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
             return true;
         }
         if (!connected) {
-            sender.sendMessage(ChatColor.YELLOW + "amethystADS is not set up yet — create an account at jplayz.net and link this server with /aa register first.");
+            sender.sendMessage(ChatColor.YELLOW + "amethystADS is not set up yet — create an account at amethystads.com and link this server with /aa register first.");
             sendWebsiteLink(sender);
             return true;
         }
@@ -626,7 +626,7 @@ public final class AmethystAdsPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() {
                 if (!connected) {
-                    p.sendMessage(ChatColor.YELLOW + "amethystADS is not connected — create an account at jplayz.net and link this server (run /aa register):");
+                    p.sendMessage(ChatColor.YELLOW + "amethystADS is not connected — create an account at amethystads.com and link this server (run /aa register):");
                     sendWebsiteLink(p);
                 }
                 if (updateStaged) {

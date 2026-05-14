@@ -1,12 +1,14 @@
 # amethystads plugin
 
+> **Domain migration** — `jplayz.net` is now **`amethystads.com`**. The old domain still works (redirects to the new one) but please update any bookmarks. Existing plugin installs continue to function without action.
+
 > **Early Access** — This plugin is currently in early access. To request access, join the Discord server at https://discord.gg/KkNfCQjczs
 
 Bukkit/Spigot plugin that fetches banner ads from the amethystADS edge node and displays them in-game. Servers earn credits per verified player click.
 
 ## Account & website
 
-**[jplayz.net](https://jplayz.net) is where server operators create an account.** You sign in with Google, link this plugin to your account using the registration token described below, upload/manage ad creatives, and view your earnings dashboard. The plugin itself is a thin reporter — all account, billing, and ad management happens at jplayz.net.
+**[amethystads.com](https://amethystads.com) is where server operators create an account.** You sign in with Google, link this plugin to your account using the registration token described below, upload/manage ad creatives, and view your earnings dashboard. The plugin itself is a thin reporter — all account, billing, and ad management happens at amethystads.com.
 
 ## Requirements
 
@@ -50,9 +52,9 @@ Output: `build/libs/amethystads-plugin.jar`
 |---|---|
 | `server-id` | Unique identifier for this server. Auto-generated as a random UUID on first run. |
 | `server-secret` | Shared secret used to HMAC-sign click and impression events. Auto-generated as 32 bytes of random hex on first run. |
-| `api-url` | URL of the amethystADS API. Defaults to `https://api.jplayz.net`. |
+| `api-url` | URL of the amethystADS API. Defaults to `https://api.amethystads.com`. |
 
-To link this server to your jplayz.net account, run `/aa register` in-game to generate a registration token, then sign in at **[jplayz.net](https://jplayz.net)** and paste the token into the publisher dashboard. The token embeds the `server-id` and `server-secret` already in the config, so no manual copying is needed.
+To link this server to your amethystads.com account, run `/aa register` in-game to generate a registration token, then sign in at **[amethystads.com](https://amethystads.com)** and paste the token into the publisher dashboard. The token embeds the `server-id` and `server-secret` already in the config, so no manual copying is needed.
 
 ## Commands
 
@@ -60,8 +62,8 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 
 | Command | Description |
 |---|---|
-| `/aa` | Show whether the plugin is connected and a link to jplayz.net |
-| `/aa register` | Generate a registration token; paste it at [jplayz.net](https://jplayz.net) to link this server to your account (click the chat link to copy) |
+| `/aa` | Show whether the plugin is connected and a link to amethystads.com |
+| `/aa register` | Generate a registration token; paste it at [amethystads.com](https://amethystads.com) to link this server to your account (click the chat link to copy) |
 | `/aa give` | Give yourself the ad placement tool (a blaze rod) |
 | `/aa reload` | Clear the image cache and re-poll the edge node |
 | `/aa status` | Show connection status, API URL, server-id, active ad count, placed ad-group count, pending impression count, and the most recent flush error (if any) |
@@ -70,11 +72,11 @@ All commands require the `amethystads.admin` permission (granted to ops by defau
 
 ## How It Works
 
-1. The operator creates an account at **[jplayz.net](https://jplayz.net)** and links this plugin instance via `/aa register` + the publisher dashboard.
+1. The operator creates an account at **[amethystads.com](https://amethystads.com)** and links this plugin instance via `/aa register` + the publisher dashboard.
 2. The plugin polls the amethystADS API at startup (and every 5 seconds thereafter) and fetches the current banner ad set.
 3. Ads are rendered as 2×2 item-frame maps placed by ops with the ad tool from `/aa give`.
 4. Per-player impressions are batched and flushed every 30 seconds; clicks/interactions are sent immediately. All events are HMAC-signed with the server's secret.
-5. The API verifies the signature, runs click-fraud checks, and credits the server's jplayz.net account where the operator can see earnings and manage ads.
+5. The API verifies the signature, runs click-fraud checks, and credits the server's amethystads.com account where the operator can see earnings and manage ads.
 
 ## Auto-updates
 
