@@ -11,7 +11,12 @@ on:
         required: true
 
 jobs:
+  # Confirm the source compiles against every supported MC version before shipping.
+  verify:
+    uses: ./.github/workflows/_verify.yml
+
   release:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -49,8 +54,10 @@ jobs:
           echo "Version successfully injected into build.gradle"
           echo "plugin.yml will receive version via Gradle processResources (placeholder: \${version})"
 
+      # Single universal jar (Java 8 bytecode, built against the lowest API). It runs
+      # on every Minecraft version checked by the verify job — from 1.13 through 26.x.
       - name: Build JAR
-        run: gradle build --no-daemon
+        run: ./gradlew --no-daemon build
 
       - name: Create release
         uses: softprops/action-gh-release@v2

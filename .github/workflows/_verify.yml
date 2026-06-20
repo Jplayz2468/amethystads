@@ -1,0 +1,41 @@
+name: Verify compatibility
+
+# Reusable workflow: compile-verify the plugin source against every supported
+# Minecraft API version. The plugin uses only the public Bukkit/Spigot API (no NMS
+# or version-specific internals), so if the source compiles against a version, the
+# single universal jar runs on that version. One representative release per major
+# line is checked — patch releases inside a line share the same API surface.
+on:
+  workflow_call:
+
+jobs:
+  verify:
+    name: Compile against MC ${{ matrix.mc }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { mc: '1.17',    api: '1.17-R0.1-SNAPSHOT' }
+          - { mc: '1.18.2',  api: '1.18.2-R0.1-SNAPSHOT' }
+          - { mc: '1.19.4',  api: '1.19.4-R0.1-SNAPSHOT' }
+          - { mc: '1.20.6',  api: '1.20.6-R0.1-SNAPSHOT' }
+          - { mc: '1.21.11', api: '1.21.11-R0.1-SNAPSHOT' }
+          - { mc: '26.1',    api: '26.1.2.build.72-stable' }
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      # Java 25 reads every paper-api artifact above (26.x ships Java 25 bytecode).
+      # javaVersion=25 lifts the project's Gradle JVM constraint so the modern
+      # paper-api metadata resolves; the shipped jar is still built at Java 8.
+      - name: Set up Java 25
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Compile against ${{ matrix.api }}
+        run: ./gradlew --no-daemon compileJava -PapiKind=paper -PapiVersion='${{ matrix.api }}' -PjavaVersion=25

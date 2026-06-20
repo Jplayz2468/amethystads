@@ -1,0 +1,39 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Prove the source still compiles against every supported MC version.
+  verify:
+    uses: ./.github/workflows/_verify.yml
+
+  # Build the single universal jar (Java 8 bytecode, lowest API) that runs on all
+  # of the versions verified above. Uploaded as a CI artifact for testing.
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.2
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4.7.0
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build universal JAR
+        run: ./gradlew --no-daemon build
+
+      - name: Upload JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: amethystads-plugin
+          path: build/libs/amethystads-plugin.jar
+          if-no-files-found: error

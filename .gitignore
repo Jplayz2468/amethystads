@@ -2,6 +2,9 @@
 build/
 .gradle/
 
+# IDE compile output (Eclipse/VS Code Java)
+bin/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

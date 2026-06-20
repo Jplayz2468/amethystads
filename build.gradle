@@ -5,27 +5,49 @@ plugins {
 group = 'net.jplayz'
 version = '1.0.0'
 
+// Shipped jar targets Java 8 bytecode so it loads on any server runtime (Java 8+).
+// CI raises this with -PjavaVersion=N only to satisfy the Gradle metadata of modern
+// paper-api artifacts when compile-verifying (e.g. paper-api 26.x requires Java 25).
+def javaVersion = JavaVersion.toVersion((project.findProperty('javaVersion') ?: '8').toString())
+
 java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
+    sourceCompatibility = javaVersion
+    targetCompatibility = javaVersion
 }
 
 repositories {
     mavenCentral()
     maven { url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/' }
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
     maven { url = 'https://oss.sonatype.org/content/repositories/snapshots' }
 }
 
+// The plugin uses only the public Bukkit/Spigot API (no NMS / version-specific
+// internals), so a single jar built against the lowest supported API runs on every
+// newer server. CI overrides these to compile-verify the source against each game
+// version. Defaults reproduce the universal build that is shipped in releases.
+//   -PapiKind=spigot|paper  -PapiVersion=<artifact version>
+def apiKind = (project.findProperty('apiKind') ?: 'spigot').toString()
+def apiVersion = (project.findProperty('apiVersion') ?: '1.13.2-R0.1-SNAPSHOT').toString()
+
 dependencies {
-    compileOnly('org.spigotmc:spigot-api:1.13.2-R0.1-SNAPSHOT') {
-        exclude group: 'net.md-5', module: 'bungeecord-chat'
+    if (apiKind == 'paper') {
+        // paper-api is a superset of the Bukkit API and bundles bungeecord-chat.
+        compileOnly "io.papermc.paper:paper-api:${apiVersion}"
+    } else {
+        compileOnly("org.spigotmc:spigot-api:${apiVersion}") {
+            exclude group: 'net.md-5', module: 'bungeecord-chat'
+        }
+        compileOnly 'net.md-5:bungeecord-chat:1.21-R0.4'
     }
-    compileOnly 'net.md-5:bungeecord-chat:1.21-R0.4'
 }
 
 processResources {
+    // Capture outside the closure: referencing project at execution time is
+    // deprecated (and configuration-cache incompatible) in Gradle 9+.
+    def pluginVersion = project.version
     filesMatching('plugin.yml') {
-        expand(version: project.version)
+        expand(version: pluginVersion)
     }
     filteringCharset = 'UTF-8'
 }
